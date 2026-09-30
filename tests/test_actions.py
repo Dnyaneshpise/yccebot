@@ -312,3 +312,29 @@ async def test_post_comment_empty_text_refused():
 
     b = BuilderCenter()
     assert "REFUSED" in await b.post_comment("https://builder.aws.com/content/x", "   ")
+
+def test_is_real_article_accepts_relative_and_absolute():
+    """Builder Center hrefs are often relative - both forms must pass."""
+    from agent.builder import BuilderCenter
+
+    b = BuilderCenter()
+    assert b.is_real_article({"url": "/content/3JNtXeZax1v5f73FkGvm6EBoQrz/some-title"})
+    assert b.is_real_article(
+        {"url": "https://builder.aws.com/content/3JNtXeZax1v5f73FkGvm6EBoQrz/some-title"}
+    )
+    assert b.is_real_article({"url": "/discussion/abc123"})
+
+
+def test_is_real_article_rejects_chrome():
+    from agent.builder import BuilderCenter
+
+    b = BuilderCenter()
+    for bad in (
+        {"url": "/build/workshops", "title": "Workshops"},
+        {"url": "/community", "title": "Community"},
+        {"url": "/wishlist"},
+        {"url": "javascript:void(0)"},
+        {"url": "#"},
+        {"url": ""},
+    ):
+        assert b.is_real_article(bad) is False, bad

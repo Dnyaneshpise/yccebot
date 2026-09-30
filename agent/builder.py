@@ -14,7 +14,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from .rewards import parse_badge_count
 
@@ -48,6 +48,9 @@ class BuilderCenter:
         self.context: BrowserContext | None = None
         self.page: Page | None = None
         self._badge_cache: dict[str, Any] | None = None
+        # Tracks whether the current page is the feed, so discovery knows when
+        # it must navigate before scanning.
+        self._on_feed: bool = False
 
     async def initialize(self, storage_state_path: str | None = None) -> None:
         """Launch Chromium, restoring cookies from a Playwright storage state.
@@ -128,6 +131,9 @@ class BuilderCenter:
             except Exception:
                 pass
         await self._settle()
+        # Only the site root is the feed; anything else means discovery must
+        # navigate before it can scan.
+        self._on_feed = target.rstrip("/") == self.base_url.rstrip("/")
         return True
 
     async def _settle(self, ms: int = 2000) -> None:
@@ -284,8 +290,26 @@ class BuilderCenter:
     # ------------------------------------------------------------------
     # Activity discovery (read-only)
     # ------------------------------------------------------------------
+    def _is_on_feed(self) -> bool:
+        """True when the current page is the Builder Center home feed.
+
+        Read from the live URL, never from a cached flag, so it stays correct
+        however the page was navigated to.
+        """
+        if self.page is None:
+            return False
+        try:
+            path = urlparse(self.page.url).path.rstrip("/")
+        except Exception:
+            return False
+        return path in ("", "/")
+
     async def discover_activities(self, limit: int = 20) -> list[dict[str, str]]:
         """Collect recent activity entries with title, URL and timestamp.
+
+        Navigates to the feed first: the caller is rarely still on the feed
+        (badge tracking may have just visited the profile), and scanning the
+        wrong page silently returns nothing.
 
         Returns an empty list on any failure - discovery is best-effort and
         must never abort the daily run.
@@ -293,8 +317,48 @@ class BuilderCenter:
         if self.page is None:
             return []
 
+        # Derive this from the live URL rather than a cached flag: other code
+        # paths (e.g. the csrf capture) navigate with page.goto directly and
+        # would leave a flag stale.
+        if not self._is_on_feed():
+            if not await self.goto(self.base_url):
+                return []
+            await self._dismiss_consent()
+
         activities: list[dict[str, str]] = []
         seen: set[str] = set()
+        # The feed renders article titles as bare <a href="/content/..."> links
+        # with no stable wrapper element, so read them directly rather than
+        # relying on container selectors that may not exist.
+        try:
+            rows = await self.page.evaluate(
+                """() => Array.from(document.querySelectorAll('a[href*="/content/"]'))
+                        .map(a => ({ url: a.href,
+                                     title: (a.innerText || a.textContent || '').trim() }))
+                        .filter(x => x.title && x.title.length > 8)"""
+            )
+        except Exception as exc:
+            print(f"Direct article link scan failed: {type(exc).__name__}")
+            rows = []
+
+        for row in rows or []:
+            entry = {
+                "title": str(row.get("title", ""))[:300],
+                "url": str(row.get("url", "")),
+                "timestamp": "",
+                "content": "",
+            }
+            if not self.is_real_article(entry):
+                continue
+            if entry["url"] in seen:
+                continue
+            seen.add(entry["url"])
+            activities.append(entry)
+            if len(activities) >= limit:
+                return activities
+
+        if activities:
+            return activities
 
         for selector in self.ACTIVITY_CONTAINER_SELECTORS:
             try:
@@ -325,10 +389,13 @@ class BuilderCenter:
 
         The feed markup contains header links ("Workshops", "Community", ...)
         that are not articles. A real article URL carries a content id, which
-        is the only reliable signal - titles alone are not enough.
+        is the only reliable signal - titles alone are not enough. Hrefs may be
+        relative ("/content/<id>/<slug>") or absolute, so both are accepted.
         """
-        url = (entry.get("url") or "").lower()
-        if not url or not url.startswith("http"):
+        url = (entry.get("url") or "").strip().lower()
+        if not url:
+            return False
+        if url.startswith(("javascript:", "mailto:", "#")):
             return False
         # Builder Center content URLs look like /content/<id>/<slug>
         if re.search(r"/content/[A-Za-z0-9]{8,}", url):

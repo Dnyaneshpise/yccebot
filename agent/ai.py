@@ -8,6 +8,7 @@ working when free model availability changes. Every failure is surfaced as an
 from __future__ import annotations
 
 import json
+import re
 from urllib import error, request
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -175,10 +176,10 @@ class AIAssistant:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user},
             ],
-            max_tokens=5,
+            max_tokens=8,
             temperature=0.0,
-        ).strip().upper()
-        return reply.startswith("YES")
+        ).strip()
+        return _is_affirmative(reply)
 
     def classify_activity(self, title: str, content: str = "") -> str:
         """Classify an item into a coarse topic label for relevance ranking."""
@@ -338,3 +339,29 @@ def list_free_models(api_key: str, timeout: int = 20) -> list[str]:
     return sorted(
         m["id"] for m in data.get("data", []) if str(m.get("id", "")).endswith(":free")
     )
+
+def _is_affirmative(reply: str) -> bool:
+    """Interpret a YES/NO answer from a small model.
+
+    Small free models frequently answer with a sentence, a leading "Answer: YES",
+    or markdown instead of a bare token. We look for an explicit affirmative
+    anywhere in a short reply, but an explicit negative always wins so a reply
+    like "NO - this is too generic" is never read as approval.
+    """
+    if not reply:
+        return False
+    text = reply.strip().strip("*_`").upper()
+    first_line = text.splitlines()[0].strip() if text.splitlines() else text
+
+    if re.search(r"\bNO\b", first_line):
+        return False
+    if re.search(r"\bYES\b", first_line):
+        return True
+
+    # Fall back to the whole reply only when it is short enough to be a
+    # single-token answer plus noise.
+    if len(text) <= 60:
+        if re.search(r"\bNO\b", text):
+            return False
+        return bool(re.search(r"\bYES\b", text))
+    return False

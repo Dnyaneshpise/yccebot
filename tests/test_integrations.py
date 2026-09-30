@@ -291,3 +291,32 @@ def test_malformed_badge_details_are_dropped(tmp_path):
     assert state["badge_total"] is None
     assert state["badge_details"] is None
     assert state["badge_categories"] is None
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("YES", True),
+        ("yes", True),
+        ("YES - supports a real trade-off", True),
+        ("Answer: YES", True),
+        ("**YES**", True),
+        ("Sure, YES this works", True),
+        ("NO", False),
+        ("No, too generic", False),
+        ("NO - nothing substantive", False),
+        ("", False),
+        (None, False),
+        ("This is a long rambling response with no clear answer at all here", False),
+    ],
+)
+def test_is_affirmative(reply, expected):
+    from agent.ai import _is_affirmative
+
+    assert _is_affirmative(reply) is expected
+
+
+def test_is_affirmative_prefers_explicit_no():
+    """A leading NO must win even if a YES appears later in the reply."""
+    from agent.ai import _is_affirmative
+
+    assert _is_affirmative("NO. It could be YES for others but not here.") is False

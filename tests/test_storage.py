@@ -158,9 +158,11 @@ def test_rank_sorts_by_descending_relevance():
     assert ranked[0]["relevance"] > ranked[1]["relevance"]
 
 
-def test_rank_drops_titles_below_the_minimum_score():
-    """A single weak keyword is not enough to spend an LLM call on."""
-    assert rank_activities([{"title": "lambda", "url": "u1"}]) == []
+def test_rank_respects_min_score():
+    """min_score is the caller's knob; there is no hidden floor."""
+    weak = [{"title": "lambda", "url": "u1"}]
+    assert rank_activities(weak, min_score=2) == []
+    assert len(rank_activities(weak, min_score=1)) == 1
 
 
 def test_rank_returns_empty_for_all_noise():

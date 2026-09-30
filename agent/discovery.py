@@ -62,8 +62,16 @@ def is_relevant(title: str, content: str = "", min_score: int = 2) -> bool:
     return relevance_score(title, content) >= min_score
 
 
-def rank_activities(activities: list[dict], seen_titles: set[str] | None = None) -> list[dict]:
-    """Filter out noise/seen items and sort by descending relevance."""
+def rank_activities(
+    activities: list[dict],
+    seen_titles: set[str] | None = None,
+    min_score: int = 1,
+) -> list[dict]:
+    """Filter out noise/seen items and sort by descending relevance.
+
+    ``min_score`` defaults to 1 (any real AWS signal) because the caller decides
+    how strict to be; a hardcoded floor here would silently override it.
+    """
     seen = {normalize_title(t) for t in (seen_titles or set())}
     scored: list[tuple[int, dict]] = []
     for activity in activities:
@@ -74,7 +82,7 @@ def rank_activities(activities: list[dict], seen_titles: set[str] | None = None)
         # Collapse duplicates within this batch as well as across runs.
         seen.add(key)
         score = relevance_score(title, activity.get("content", ""))
-        if score < 2:
+        if score < min_score:
             continue
         enriched = dict(activity)
         enriched["relevance"] = score
@@ -110,12 +118,12 @@ async def find_opportunities(
     """
     drafts: list[dict] = []
 
-    activities = await builder.discover_activities()
-    ranked = rank_activities(activities, seen_titles)
-    candidates = [a for a in ranked if a.get("relevance", 0) >= min_score][:max_items]
+    activities = await builder.discover_activities(limit=max_items * 6)
+    ranked = rank_activities(activities, seen_titles, min_score=min_score)
+    candidates = ranked[:max_items]
 
     if not candidates:
-        print("No new relevant activities found")
+        print(f"No new relevant activities found (scanned {len(activities)}, min_score={min_score})")
         return drafts
 
     for activity in candidates:
