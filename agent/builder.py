@@ -39,6 +39,8 @@ class BuilderCenter:
         base_url: str = "https://builder.aws.com/",
         headless: bool = True,
         user_agent: str | None = None,
+        cdp_endpoint: str | None = None,
+        browser_profile: str | None = None,
     ):
         self.base_url = base_url.rstrip("/") + "/"
         self.headless = headless
@@ -47,6 +49,8 @@ class BuilderCenter:
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
+        self.cdp_endpoint: str | None = cdp_endpoint
+        self.browser_profile: str | None = browser_profile
         self._badge_cache: dict[str, Any] | None = None
         # Set when the badge API refuses this account outright. Retrying cannot
         # help, so later runs skip the API and go straight to the DOM fallback.
@@ -553,6 +557,50 @@ class BuilderCenter:
         "[class*='content-body']",
         "main",
     )
+
+    async def connect_over_cdp(self, endpoint: str | None = None) -> bool:
+        """Attach to an already-running browser that has CDP enabled.
+
+        This is the most reliable way to act as a real signed-in user: the
+        browser is genuine, the profile and cookies are the user's own, and
+        nothing is launched under Playwright's control.
+
+        The browser must be started with --remote-debugging-port. Returns
+        True on success.
+        """
+        from playwright.async_api import async_playwright
+
+        target = (endpoint or self.cdp_endpoint or "").strip()
+        if not target:
+            print("No CDP endpoint supplied")
+            return False
+
+        if not target.startswith(("http://", "ws://")):
+            target = f"http://{target}"
+
+        self.cdp_endpoint = target
+        self._playwright = await async_playwright().start()
+        try:
+            self.browser = await self._playwright.chromium.connect_over_cdp(target)
+        except Exception as exc:
+            print(f"Could not connect over CDP to {target}: {type(exc).__name__}")
+            print("Is the browser running with --remote-debugging-port?")
+            await self.close()
+            return False
+
+        contexts = self.browser.contexts
+        if not contexts:
+            print("CDP connected but the browser exposed no page context")
+            await self.close()
+            return False
+
+        self.context = contexts[0]
+        self.context.set_default_timeout(DEFAULT_TIMEOUT_MS)
+
+        pages = [p for p in self.context.pages if "builder.aws.com" in (p.url or "")]
+        self.page = pages[0] if pages else await self.context.new_page()
+        print(f"Attached to a running browser via CDP ({target})")
+        return True
 
     @staticmethod
     def is_same_host(url: str, base_url: str) -> bool:
