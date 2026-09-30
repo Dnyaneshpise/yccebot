@@ -1,12 +1,244 @@
 {
   "schema_version": 1,
-  "badges": null,
-  "last_run": null,
+  "badges": 5,
+  "last_run": "2026-09-30T06:56:25Z",
   "milestones": {
     "7": false,
     "14": false,
     "21": false
   },
   "activities": [],
-  "history": []
+  "history": [
+    {
+      "timestamp": "2026-09-30T06:54:46Z",
+      "badges": 5
+    }
+  ],
+  "badge_total": 21,
+  "badge_categories": {
+    "Hot Streaks": {
+      "granted": 2,
+      "total": 11
+    },
+    "Getting Started": {
+      "granted": 3,
+      "total": 6
+    },
+    "Sparking Connection": {
+      "granted": 0,
+      "total": 4
+    }
+  },
+  "badge_details": [
+    {
+      "id": "activity_badge.profile.about",
+      "name": "Hello, World!",
+      "description": "Complete the About section in your profile to introduce yourself in Builder Center.",
+      "category": "Getting Started",
+      "status": "GRANTED",
+      "count": 1,
+      "threshold": 1,
+      "unit": null
+    },
+    {
+      "id": "activity_badge.article.10read",
+      "name": "Knowledge Seeker",
+      "description": "Read 10 different articles.",
+      "category": "Getting Started",
+      "status": "GRANTED",
+      "count": 10,
+      "threshold": 10,
+      "unit": "articles read"
+    },
+    {
+      "id": "activity_badge.profile.photo",
+      "name": "Photo Finisher",
+      "description": "Upload a photo to your profile.",
+      "category": "Getting Started",
+      "status": "GRANTED",
+      "count": 1,
+      "threshold": 1,
+      "unit": "upload"
+    },
+    {
+      "id": "activity_badge.like.streak.7day",
+      "name": "7-Day Like Streak",
+      "description": "Like content daily for seven consecutive days.",
+      "category": "Hot Streaks",
+      "status": "GRANTED",
+      "count": 7,
+      "threshold": 7,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.visitor.streak.7day",
+      "name": "7-Day Visit Streak",
+      "description": "Visit Builder Center daily for seven consecutive days while signed in.",
+      "category": "Hot Streaks",
+      "status": "GRANTED",
+      "count": 7,
+      "threshold": 7,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.comment.first",
+      "name": "Discussion Debut",
+      "description": "Join the conversation by commenting on content.",
+      "category": "Getting Started",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 1,
+      "unit": "comments"
+    },
+    {
+      "id": "activity_badge.article.first",
+      "name": "First Article",
+      "description": "Publish your first article.",
+      "category": "Getting Started",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 1,
+      "unit": "articles"
+    },
+    {
+      "id": "activity_badge.wish.first",
+      "name": "First Wish",
+      "description": "Publish your first wish in AWS Wishlist.",
+      "category": "Getting Started",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 1,
+      "unit": "wishes"
+    },
+    {
+      "id": "activity_badge.comment.streak.30day",
+      "name": "30-Day Comment Streak",
+      "description": "Comment daily for 30 consecutive days.",
+      "category": "Hot Streaks",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 30,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.like.streak.30day",
+      "name": "30-Day Like Streak",
+      "description": "Like content daily for 30 consecutive days.",
+      "category": "Hot Streaks",
+      "status": "IN_PROGRESS",
+      "count": 10,
+      "threshold": 30,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.visitor.streak.30day",
+      "name": "30-Day Visit Streak",
+      "description": "Visit Builder Center daily for 30 consecutive days while signed in.",
+      "category": "Hot Streaks",
+      "status": "IN_PROGRESS",
+      "count": 14,
+      "threshold": 30,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.content.creation.streak.week",
+      "name": "4-Week Article Publishing Streak",
+      "description": "Publish an article weekly for four consecutive weeks.",
+      "category": "Hot Streaks",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 4,
+      "unit": "weeks"
+    },
+    {
+      "id": "activity_badge.upvote.streak.week",
+      "name": "4-Week Wish Vote Streak",
+      "description": "Vote on wishes weekly for four consecutive weeks.",
+      "category": "Hot Streaks",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 4,
+      "unit": "weeks"
+    },
+    {
+      "id": "activity_badge.comment.streak.7day",
+      "name": "7-Day Comment Streak",
+      "description": "Comment daily for seven consecutive days.",
+      "category": "Hot Streaks",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 7,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.comment.streak.90day",
+      "name": "90-Day Comment Streak",
+      "description": "Comment daily for 90 consecutive days.",
+      "category": "Hot Streaks",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 90,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.like.streak.90day",
+      "name": "90-Day Like Streak",
+      "description": "Like content daily for 90 consecutive days.",
+      "category": "Hot Streaks",
+      "status": "IN_PROGRESS",
+      "count": 10,
+      "threshold": 90,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.visitor.streak.90day",
+      "name": "90-Day Visit Streak",
+      "description": "Visit Builder Center daily for 90 consecutive days while signed in.",
+      "category": "Hot Streaks",
+      "status": "IN_PROGRESS",
+      "count": 14,
+      "threshold": 90,
+      "unit": "days"
+    },
+    {
+      "id": "activity_badge.conversation.starter",
+      "name": "Conversation Starter",
+      "description": "Get a reply on 10 of your comments.",
+      "category": "Sparking Connection",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 10,
+      "unit": "comments"
+    },
+    {
+      "id": "activity_badge.idea.influencer",
+      "name": "Idea Influencer",
+      "description": "Get 10 votes on your wishes.",
+      "category": "Sparking Connection",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 10,
+      "unit": "votes"
+    },
+    {
+      "id": "activity_badge.meaningful.contributor",
+      "name": "Meaningful Contributor",
+      "description": "Get 10 likes on five of your comments.",
+      "category": "Sparking Connection",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 5,
+      "unit": "comments"
+    },
+    {
+      "id": "activity_badge.valued.creator",
+      "name": "Valued Creator",
+      "description": "Get 10 likes on five of your articles.",
+      "category": "Sparking Connection",
+      "status": "NOT_STARTED",
+      "count": 0,
+      "threshold": 5,
+      "unit": "articles"
+    }
+  ]
 }

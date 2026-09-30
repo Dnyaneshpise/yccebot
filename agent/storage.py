@@ -77,6 +77,17 @@ class ProgressStorage:
             milestones = {}
         state["milestones"] = {k: bool(milestones.get(k, False)) for k in ("7", "14", "21")}
 
+        # Badge detail fields are additive; drop them if malformed rather
+        # than letting a bad shape poison the next run.
+        for key in ("badge_details", "badge_categories"):
+            value = state.get(key)
+            if value is not None and not isinstance(value, (list, dict)):
+                state[key] = None
+
+        total = state.get("badge_total")
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            state["badge_total"] = None
+
         return state
 
     def save(self, state: dict[str, Any]) -> None:

@@ -100,7 +100,7 @@ async def check_auth(builder: BuilderCenter, telegram: TelegramNotifier) -> int:
         telegram.send_error("Could not load the AWS Builder Center page.")
         return 1
 
-    if not builder.is_authenticated():
+    if not await builder.is_authenticated():
         log("ERROR: session is not authenticated")
         telegram.send_auth_expired()
         return 2
@@ -117,11 +117,25 @@ async def track_badges(
     previous: int | None,
 ) -> None:
     """Read the badge count, persist it, and notify."""
-    badge_count = await builder.get_badge_count()
+    detail = await builder.get_badge_progress()
+    badge_count = detail["granted"] if detail else None
+    total = detail["total"] if detail else None
+
     if badge_count is None:
         log("WARNING: badge count could not be read; keeping the stored value")
     else:
-        log(f"Current badge count: {badge_count}/{TARGET_BADGES}")
+        log(f"Current badge count: {badge_count}/{total or TARGET_BADGES} badges granted")
+        state["badge_total"] = total
+        state["badge_categories"] = detail.get("categories", {})
+        # NOTE: "badges" is already the integer count - the per-badge detail
+        # list must use a different key or _normalize() would coerce it away.
+        state["badge_details"] = detail.get("badges", [])
+        outstanding = [b for b in detail.get("badges", []) if b.get("status") != "GRANTED"]
+        for badge in outstanding[:5]:
+            log(
+                f"  outstanding: {badge['name']} "
+                f"{badge.get('count')}/{badge.get('threshold')}"
+            )
 
     state, changed = storage.record_badge_count(state, badge_count)
     if changed:
@@ -140,7 +154,11 @@ async def track_badges(
             + describe_milestones()
         )
 
-    telegram.send_progress(badge_count, state.get("milestones", {}), TARGET_BADGES)
+    telegram.send_progress(
+        badge_count,
+        state.get("milestones", {}),
+        total or TARGET_BADGES,
+    )
 
 
 async def discover_and_draft(

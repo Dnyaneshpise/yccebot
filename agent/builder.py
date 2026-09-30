@@ -9,6 +9,7 @@ likes, or comments on anything - it only reads.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -205,14 +206,23 @@ class BuilderCenter:
     # Badge progress
     # ------------------------------------------------------------------
     async def get_badge_count(self) -> int | None:
-        """Read the current badge count from the authenticated dashboard.
+        """Read the current badge count.
 
-        Returns ``None`` when the count cannot be determined. Callers must treat
-        ``None`` as "unknown" and must not overwrite previously stored data.
+        Prefers the badge progress API (authoritative), then falls back to DOM
+        selectors and finally to page-text parsing. Returns ``None`` when the
+        count cannot be determined - callers must treat ``None`` as "unknown"
+        and must not overwrite previously stored data.
         """
         if self.page is None:
             return None
 
+        rows = await self.fetch_badge_progress()
+        if rows is not None:
+            count = self.granted_badge_count(rows)
+            if count >= 0:
+                return count
+
+        print("Falling back to DOM scraping for the badge count")
         await self._settle()
 
         for selector in self.BADGE_SELECTORS:
@@ -464,3 +474,155 @@ class BuilderCenter:
         base_host = b.netloc.lower()
         host = a.netloc.lower()
         return host == base_host or host.endswith("." + base_host) or a.netloc.lower().endswith("aws.com")
+    # ------------------------------------------------------------------
+    # Badge progress API
+    #
+    # The Builder Center profile page reads badges from a POST endpoint:
+    #   https://api.builder.aws.com/rms/badges/progress
+    # body: {"locale":"en","pageSize":50}  + header: x-csrf-token
+    # The csrf token is minted per page load, so we harvest it from the
+    # site's own request rather than trying to guess it. Responses are
+    # paginated via nextToken.
+    # ------------------------------------------------------------------
+    BADGE_PROGRESS_URL = "https://api.builder.aws.com/rms/badges/progress"
+    PROFILE_PATH = "/profile"
+
+    async def _capture_csrf(self) -> str | None:
+        """Load the profile page and capture the csrf token it sends."""
+        assert self.page is not None
+        captured: dict[str, str] = {}
+
+        async def on_request(request: Any) -> None:
+            if "rms/badges" not in request.url:
+                return
+            try:
+                headers = await request.all_headers()
+            except Exception:
+                return
+            token = headers.get("x-csrf-token")
+            if token:
+                captured["token"] = token
+
+        self.page.on("request", on_request)
+        try:
+            await self.goto(urljoin(self.base_url, self.PROFILE_PATH))
+            for _ in range(40):  # up to ~8s waiting for the first XHR
+                if "token" in captured:
+                    return captured["token"]
+                await asyncio.sleep(0.2)
+        finally:
+            try:
+                self.page.remove_listener("request", on_request)
+            except Exception:
+                pass
+        return captured.get("token")
+
+    async def fetch_badge_progress(self) -> list[dict[str, Any]] | None:
+        """Fetch every badge progress row from the Builder Center API.
+
+        Returns ``None`` when the API cannot be read, so callers can fall back
+        to DOM text scraping rather than trusting a partial list.
+        """
+        if self.page is None:
+            return None
+
+        csrf = await self._capture_csrf()
+        if not csrf:
+            print("Could not capture the Builder Center csrf token")
+            return None
+
+        rows: dict[str, dict[str, Any]] = {}
+        token = ""
+        for _ in range(20):  # hard cap so a pagination bug cannot hang a run
+            payload: dict[str, Any] = {"locale": "en", "pageSize": 50}
+            if token:
+                payload["nextToken"] = token
+            try:
+                response = await self.page.request.post(
+                    self.BADGE_PROGRESS_URL,
+                    data=json.dumps(payload),
+                    headers={
+                        "content-type": "application/json",
+                        "accept": "application/json",
+                        "x-csrf-token": csrf,
+                        "referer": self.base_url,
+                    },
+                )
+            except Exception as exc:
+                print(f"Badge API request failed: {type(exc).__name__}")
+                return None
+
+            if response.status != 200:
+                print(f"Badge API returned HTTP {response.status}")
+                return None
+
+            try:
+                data = await response.json()
+            except Exception:
+                print("Badge API returned a non-JSON body")
+                return None
+
+            for row in data.get("badgeProgressList") or []:
+                badge_id = (row.get("baseBadge") or {}).get("badgeId")
+                if badge_id:
+                    rows[badge_id] = row
+
+            token = data.get("nextToken") or ""
+            if not token:
+                break
+
+        return list(rows.values()) if rows else None
+    @staticmethod
+    def granted_badge_count(rows: list[dict[str, Any]]) -> int:
+        """Count badges whose status is GRANTED."""
+        return sum(1 for row in rows if str(row.get("status", "")).upper() == "GRANTED")
+
+    @staticmethod
+    def summarize_badge_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        """Turn raw API rows into a compact, storable summary.
+
+        Returns granted/total counts plus every badge's progress, so the
+        notification can show what is still outstanding.
+        """
+        badges: list[dict[str, Any]] = []
+        categories: dict[str, dict[str, int]] = {}
+
+        for row in rows:
+            base = row.get("baseBadge") or {}
+            status = str(row.get("status", "")).upper()
+            count = row.get("progressCount")
+            threshold = row.get("threshold")
+            category = base.get("category") or "Other"
+
+            badges.append(
+                {
+                    "id": base.get("badgeId"),
+                    "name": base.get("displayName"),
+                    "description": base.get("description"),
+                    "category": category,
+                    "status": status,
+                    "count": count if isinstance(count, int) else None,
+                    "threshold": threshold if isinstance(threshold, int) else None,
+                    "unit": base.get("unit"),
+                }
+            )
+
+            bucket = categories.setdefault(category, {"granted": 0, "total": 0})
+            bucket["total"] += 1
+            if status == "GRANTED":
+                bucket["granted"] += 1
+
+        badges.sort(key=lambda b: (b["status"] != "GRANTED", b["category"] or "", b["name"] or ""))
+        return {
+            "granted": BuilderCenter.granted_badge_count(rows),
+            "total": len(rows),
+            "categories": categories,
+            "badges": badges,
+        }
+
+    async def get_badge_progress(self) -> dict[str, Any] | None:
+        """Return a full badge progress summary, or ``None`` if unavailable."""
+        rows = await self.fetch_badge_progress()
+        if rows is None:
+            return None
+        return self.summarize_badge_rows(rows)

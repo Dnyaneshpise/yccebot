@@ -53,3 +53,13 @@ reports/
 
 # NOTE: data/progress.json IS intentionally committed - the workflow updates
 # and commits it so badge history survives between scheduled runs.
+# --- Ad-hoc secret scratch files (created manually during setup) ---
+secret.txt
+aws-secret-output.txt
+*secret*.txt
+*-secret-output.txt
+auth/*.json
+# --- local probe/scratch output ---
+_body.txt
+_profile.txt
+_*.py

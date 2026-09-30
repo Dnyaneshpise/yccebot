@@ -166,3 +166,128 @@ def test_write_storage_state_rejects_wrong_json_shape(tmp_path):
     config = Config(storage_state_b64=encoded, storage_state_path=str(tmp_path / "s.json"))
     with pytest.raises(AuthExpiredError, match="cookies"):
         write_storage_state(config)
+
+# ----------------------------------------------------------------------
+# Badge progress API (real schema captured from Builder Center)
+# ----------------------------------------------------------------------
+def _row(badge_id, status, count, threshold, name="Badge", category="Getting Started"):
+    return {
+        "baseBadge": {
+            "badgeId": badge_id,
+            "displayName": name,
+            "description": "desc",
+            "category": category,
+            "unit": "days",
+        },
+        "status": status,
+        "progressCount": count,
+        "threshold": threshold,
+    }
+
+
+def test_granted_badge_count():
+    from agent.builder import BuilderCenter
+
+    rows = [
+        _row("a", "GRANTED", 7, 7),
+        _row("b", "GRANTED", 10, 10),
+        _row("c", "IN_PROGRESS", 14, 30),
+        _row("d", "NOT_STARTED", 0, 1),
+    ]
+    assert BuilderCenter.granted_badge_count(rows) == 2
+
+
+def test_granted_badge_count_empty():
+    from agent.builder import BuilderCenter
+
+    assert BuilderCenter.granted_badge_count([]) == 0
+
+
+def test_summarize_badge_rows_shape():
+    from agent.builder import BuilderCenter
+
+    rows = [
+        _row("a", "GRANTED", 7, 7, "7-Day Like Streak", "Hot Streaks"),
+        _row("b", "IN_PROGRESS", 14, 30, "30-Day Visit Streak", "Hot Streaks"),
+        _row("c", "NOT_STARTED", 0, 1, "Discussion Debut", "Getting Started"),
+    ]
+    summary = BuilderCenter.summarize_badge_rows(rows)
+
+    assert summary["granted"] == 1
+    assert summary["total"] == 3
+    assert summary["categories"]["Hot Streaks"] == {"granted": 1, "total": 2}
+    assert summary["categories"]["Getting Started"] == {"granted": 0, "total": 1}
+    assert len(summary["badges"]) == 3
+
+    granted = [b for b in summary["badges"] if b["status"] == "GRANTED"]
+    assert granted[0]["name"] == "7-Day Like Streak"
+    assert granted[0]["count"] == 7
+    assert granted[0]["threshold"] == 7
+
+
+def test_summarize_sorts_granted_first():
+    from agent.builder import BuilderCenter
+
+    rows = [
+        _row("c", "NOT_STARTED", 0, 1, "Zeta"),
+        _row("a", "IN_PROGRESS", 3, 30, "Alpha"),
+        _row("b", "GRANTED", 1, 1, "Mid"),
+    ]
+    order = [b["name"] for b in BuilderCenter.summarize_badge_rows(rows)["badges"]]
+    assert order[0] == "Mid"
+
+
+def test_summarize_tolerates_missing_fields():
+    from agent.builder import BuilderCenter
+
+    rows = [{"status": "GRANTED", "baseBadge": {}}, {"baseBadge": {"badgeId": "x"}}]
+    summary = BuilderCenter.summarize_badge_rows(rows)
+    assert summary["granted"] == 1
+    assert summary["total"] == 2
+
+
+def test_summarize_handles_non_int_progress():
+    from agent.builder import BuilderCenter
+
+    rows = [{"baseBadge": {"badgeId": "a"}, "status": "IN_PROGRESS", "progressCount": "x", "threshold": None}]
+    badge = BuilderCenter.summarize_badge_rows(rows)["badges"][0]
+    assert badge["count"] is None
+    assert badge["threshold"] is None
+
+
+def test_badge_details_survive_storage_roundtrip(tmp_path):
+    """The per-badge detail list must not be coerced away on reload."""
+    from agent.builder import BuilderCenter
+    from agent.storage import ProgressStorage
+
+    summary = BuilderCenter.summarize_badge_rows(
+        [_row("a", "GRANTED", 7, 7, "7-Day Like Streak"), _row("b", "IN_PROGRESS", 14, 30, "30-Day")]
+    )
+    store = ProgressStorage(tmp_path / "progress.json")
+    state = store.default_state()
+    state, _ = store.record_badge_count(state, summary["granted"])
+    state["badge_total"] = summary["total"]
+    state["badge_categories"] = summary["categories"]
+    state["badge_details"] = summary["badges"]
+    store.save(state)
+
+    reloaded = store.load()
+    assert reloaded["badges"] == 1
+    assert reloaded["badge_total"] == 2
+    assert len(reloaded["badge_details"]) == 2
+    assert reloaded["badge_details"][0]["name"] == "7-Day Like Streak"
+
+
+def test_malformed_badge_details_are_dropped(tmp_path):
+    from agent.storage import ProgressStorage
+
+    path = tmp_path / "progress.json"
+    path.write_text(
+        json.dumps({"badges": 5, "badge_total": "x", "badge_details": "junk", "badge_categories": 7}),
+        encoding="utf-8",
+    )
+    state = ProgressStorage(path).load()
+    assert state["badges"] == 5
+    assert state["badge_total"] is None
+    assert state["badge_details"] is None
+    assert state["badge_categories"] is None
