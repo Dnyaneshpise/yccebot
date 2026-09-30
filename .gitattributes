@@ -1,0 +1,15 @@
+# Normalize line endings so the GitHub Actions workflow (Linux) and your local
+# Windows checkout both behave predictably.
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.txt  text eol=lf
+
+# Never touch these - must stay byte-exact.
+*.png  binary
+*.jpg  binary
+*.storage_state.json binary
