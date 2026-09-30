@@ -262,3 +262,53 @@ def test_proposal_describe_contains_decision_fields():
     assert "Cool post" in text
     assert "30-Day Like Streak" in text
     assert "https://builder.aws.com/content/z" in text
+
+# ----------------------------------------------------------------------
+# Interface guarantees - these caught a real regression where a
+# refactor silently deleted the whole engagement block.
+# ----------------------------------------------------------------------
+def test_builder_exposes_required_methods():
+    from agent.builder import BuilderCenter
+
+    for name in (
+        "initialize", "close", "goto", "is_authenticated",
+        "get_badge_count", "get_badge_progress", "fetch_badge_progress",
+        "discover_activities", "scrape_activity_content",
+        "like_article", "post_comment", "vote_on_wish",
+        "_dismiss_consent", "_find_action_control", "is_real_article",
+    ):
+        assert hasattr(BuilderCenter, name), f"BuilderCenter.{name} is missing"
+
+
+def test_execute_handlers_all_exist():
+    """Every handler main.py registers must be a real method."""
+    import inspect
+    from agent.builder import BuilderCenter
+
+    for kind in ("like", "comment", "vote"):
+        method = {"like": "like_article", "comment": "post_comment", "vote": "vote_on_wish"}[kind]
+        assert inspect.iscoroutinefunction(getattr(BuilderCenter, method))
+
+
+def test_vote_on_wish_refuses_rather_than_guessing():
+    """Unverified selectors must not be clicked at."""
+    import asyncio
+    from agent.builder import BuilderCenter
+
+    b = BuilderCenter()
+    result = asyncio.run(b.vote_on_wish("https://builder.aws.com/wishes/1"))
+    assert result.startswith("UNSUPPORTED")
+
+
+async def test_like_article_without_page_fails_safely():
+    from agent.builder import BuilderCenter
+
+    b = BuilderCenter()
+    assert "FAILED" in await b.like_article("https://builder.aws.com/content/x")
+
+
+async def test_post_comment_empty_text_refused():
+    from agent.builder import BuilderCenter
+
+    b = BuilderCenter()
+    assert "REFUSED" in await b.post_comment("https://builder.aws.com/content/x", "   ")

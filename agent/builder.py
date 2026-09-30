@@ -717,3 +717,163 @@ class BuilderCenter:
                 "source": "dom",
             }
         return None
+    # ------------------------------------------------------------------
+    # Approved engagement actions
+    #
+    # SAFETY: these are only ever called for a proposal the user explicitly
+    # approved (see agent.actions.execute, which re-checks the approval flag).
+    # They perform exactly the action that was approved and make no judgement
+    # calls of their own.
+    # ------------------------------------------------------------------
+    async def _dismiss_consent(self) -> None:
+        """Remove the cookie/consent banner so controls are clickable.
+
+        The banner contains a "Sign in" button even when authenticated, which
+        both blocks clicks and confuses the auth check.
+        """
+        if self.page is None:
+            return
+        for selector in (
+            "[data-testid='ccba-content']",
+            "[data-testid='ccba-footer']",
+            "[class*='cbbas']",
+            "[id*='ccba']",
+        ):
+            try:
+                await self.page.evaluate(
+                    "sel => document.querySelectorAll(sel).forEach(e => e.remove())",
+                    selector,
+                )
+            except Exception:
+                continue
+
+    async def _find_action_control(self, aria_prefix: str) -> Any:
+        """Locate a control by its aria-label prefix, or return None."""
+        if self.page is None:
+            return None
+        selector = f"button[aria-label^='{aria_prefix}']"
+        try:
+            if await self.page.locator(selector).count() == 0:
+                return None
+            return self.page.locator(selector).first
+        except Exception:
+            return None
+
+    async def like_article(self, url: str) -> str:
+        """Like one article. Called only for an approved proposal.
+
+        Idempotent: an already-liked article is reported as skipped rather than
+        toggled, so re-running can never unlike something on purpose.
+        """
+        if not await self.goto(url):
+            return "FAILED: could not open article"
+        await self._dismiss_consent()
+
+        control = await self._find_action_control("Like this article")
+        if control is None:
+            return "FAILED: no like control found"
+
+        try:
+            pressed = await control.get_attribute("aria-pressed")
+            if str(pressed).lower() == "true":
+                return "SKIPPED: already liked"
+            await control.click(timeout=15000)
+        except Exception as exc:
+            return f"FAILED: {type(exc).__name__}"
+
+        await self.page.wait_for_timeout(1500)
+        try:
+            now = await control.get_attribute("aria-pressed")
+        except Exception:
+            now = None
+        if str(now).lower() == "true":
+            return "OK: liked"
+        return f"UNCONFIRMED: aria-pressed={now} after click"
+    async def post_comment(self, url: str, text: str) -> str:
+        """Post a comment the user drafted and approved.
+
+        Two-phase on purpose: the comment box is opened and filled first, and
+        the result is reported without an automatic submit if the composer
+        cannot be located. Nothing is published unless the full flow succeeds.
+        """
+        text = (text or "").strip()
+        if not text:
+            return "REFUSED: empty comment text"
+
+        if not await self.goto(url):
+            return "FAILED: could not open article"
+        await self._dismiss_consent()
+
+        control = await self._find_action_control("Comment on this article")
+        if control is None:
+            return "FAILED: no comment control found"
+
+        try:
+            await control.click(timeout=15000)
+        except Exception as exc:
+            return f"FAILED: could not open the comment box ({type(exc).__name__})"
+
+        await self.page.wait_for_timeout(1500)
+
+        composer = None
+        for selector in (
+            "textarea[placeholder*='omment' i]",
+            "textarea[placeholder*='dd' i]",
+            "div[contenteditable='true']",
+            "textarea",
+        ):
+            try:
+                locator = self.page.locator(selector).first
+                if await locator.count() > 0:
+                    composer = locator
+                    break
+            except Exception:
+                continue
+
+        if composer is None:
+            return "FAILED: comment box not found (nothing was posted)"
+
+        try:
+            await composer.fill(text)
+        except Exception as exc:
+            return f"FAILED: could not fill the comment box ({type(exc).__name__})"
+
+        submit = None
+        for selector in (
+            "button[type='submit']",
+            "button:has-text('Comment')",
+            "button:has-text('Post')",
+            "button:has-text('Submit')",
+        ):
+            try:
+                locator = self.page.locator(selector).first
+                if await locator.count() > 0 and await locator.is_enabled():
+                    submit = locator
+                    break
+            except Exception:
+                continue
+
+        if submit is None:
+            return "FAILED: no submit button found (text was NOT posted)"
+
+        try:
+            await submit.click(timeout=15000)
+        except Exception as exc:
+            return f"FAILED: submit failed ({type(exc).__name__})"
+
+        await self.page.wait_for_timeout(2000)
+        return "OK: comment posted"
+
+    async def vote_on_wish(self, url: str) -> str:
+        """Vote on an AWS Wishlist item the user approved.
+
+        The wish voting flow has not been verified against the live site, so
+        this refuses rather than guessing at a selector and clicking something
+        unintended.
+        """
+        if not url:
+            return "REFUSED: no wish url supplied"
+        return (
+            "UNSUPPORTED: wish voting is not implemented yet - the live wish "
+            "controls were not verified, so no click was attempted"
+        )
