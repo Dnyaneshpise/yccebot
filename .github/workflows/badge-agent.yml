@@ -2,8 +2,10 @@ name: AWS Builder Badge Agent
 
 on:
   schedule:
-    # 03:30 UTC daily. GitHub cron is always UTC.
+    # Badge tracking + proposals: once daily at 03:30 UTC.
     - cron: "30 3 * * *"
+    # Reply polling: every 6 hours so an approval waits at most ~6h.
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -13,6 +15,7 @@ on:
         options:
           - propose   # pick articles, send to Telegram for approval
           - execute   # perform only what you already approved
+          - inbox     # read approvals/rejections replied to in Telegram
           - progress  # badge tracking only, no proposals
 
 concurrency:
@@ -20,21 +23,18 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # required to commit data/progress.json back to the repo
+  contents: write
 
 jobs:
   run-agent:
     name: Badge agent
     runs-on: ubuntu-latest
-    # A hung browser must never burn the monthly quota.
     timeout-minutes: 20
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
@@ -57,8 +57,10 @@ jobs:
         run: |
           if [ -n "$DISPATCH_MODE" ]; then
             echo "mode=$DISPATCH_MODE" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 */6 * * *" ]; then
+            echo "mode=inbox" >> "$GITHUB_OUTPUT"
           else
-            echo "mode=propose" >> "$GITHUB_OUTPUT"     # scheduled run
+            echo "mode=propose" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run the agent
@@ -74,19 +76,14 @@ jobs:
         run: |
           case "${{ steps.mode.outputs.mode }}" in
             execute)  python -m agent.main --execute ;;
+            inbox)    python -m agent.main --inbox ;;
             progress) python -m agent.main --no-draft ;;
             propose)  python -m agent.main --propose ;;
             *)        python -m agent.main --propose ;;
           esac
 
-      - name: Restore approval state
-        if: always()
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-
       - name: Commit progress
-        if: steps.mode.outputs.mode != 'execute'
+        if: steps.mode.outputs.mode != 'inbox'
         run: |
           if git diff --quiet -- data/progress.json; then
             echo "No change to data/progress.json"

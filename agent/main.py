@@ -595,7 +595,18 @@ async def drain_telegram_inbox(
         return 0
 
     log(f"Found {len(decisions)} decision(s) in Telegram")
+
+    # A user may reply more than once about the same item (e.g. the bare id and
+    # then "approve <id>"). Only the last word counts, and only one reply is
+    # sent back - otherwise the same decision is acknowledged several times.
+    latest: dict[str, tuple[str, str]] = {}
     for decision, proposal_id, _update_id in decisions:
+        latest[proposal_id] = (decision, proposal_id)
+
+    if len(latest) != len(decisions):
+        log(f"  collapsed {len(decisions)} replies into {len(latest)} decision(s)")
+
+    for decision, proposal_id in latest.values():
         proposal = store.get(proposal_id)
         if proposal is None:
             log(f"  {decision} {proposal_id}: no such proposal (ignored)")

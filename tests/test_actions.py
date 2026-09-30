@@ -676,3 +676,42 @@ def test_validate_requires_approval():
 
     p = Proposal(id="v3", kind="like", title="T", url="https://x/1", approved=None)
     assert "no human approval" in (validate_for_execution(p) or "")
+
+async def test_duplicate_replies_produce_one_ack(tmp_path):
+    """Replying twice about the same item must not double-acknowledge."""
+    import agent.main as m
+    from agent.actions import ApprovalStore, Proposal
+
+    store = ApprovalStore(tmp_path / "approvals.json")
+    store.add(Proposal(id="abc123", kind="like", title="T", url="https://x/1"))
+
+    acks = []
+
+    class FakeTelegram:
+        def get_updates(self, *a, **k):
+            # the user sent the bare id AND "approve <id>"
+            return [_update("abc123", uid=1), _update("approve abc123", uid=2)]
+
+        def acknowledge(self, last):
+            pass
+
+        def parse_incoming_decisions(self, updates):
+            return [("approve", "abc123", 1), ("approve", "abc123", 2)]
+
+        def send_decision_ack(self, *a, **k):
+            acks.append(a[:2])
+            return True
+
+        def send_execution_report(self, *a, **k):
+            return True
+
+    called = []
+
+    class FakeBuilder:
+        async def like_article(self, url):
+            called.append(url)
+            return "OK: liked"
+
+    await m.drain_telegram_inbox(None, FakeBuilder(), FakeTelegram(), store)
+    assert len(acks) == 1, f"expected one ack, got {len(acks)}"
+    assert called == ["https://x/1"]
