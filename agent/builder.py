@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -46,6 +47,7 @@ class BuilderCenter:
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
+        self._badge_cache: dict[str, Any] | None = None
 
     async def initialize(self, storage_state_path: str | None = None) -> None:
         """Launch Chromium, restoring cookies from a Playwright storage state.
@@ -150,20 +152,14 @@ class BuilderCenter:
         if self.page is None:
             return False
 
+        # Dismiss the consent banner first: it contains a "Sign in" button that
+        # is present even when authenticated, which would otherwise look like a
+        # logged-out page.
+        await self._dismiss_consent()
         await self._settle(1500)
 
-        logged_out_selectors = (
-            "text=Sign in >> nth=0",
-            "button:has-text('Sign in')",
-            "a:has-text('Sign in')",
-        )
-        for selector in logged_out_selectors:
-            try:
-                if await self.page.locator(selector).count() > 0:
-                    return False
-            except Exception:
-                continue
-
+        # Positive evidence first. A single "Sign in" is not proof of being
+        # logged out, so we only conclude that from a real logout affordance.
         logged_in_selectors = (
             "text=Log out",
             "text=Sign out",
@@ -182,7 +178,20 @@ class BuilderCenter:
             except Exception:
                 continue
 
-        return await self._has_session_cookies()
+        # Session cookies are authoritative even when the UI is still rendering.
+        if await self._has_session_cookies():
+            return True
+
+        # No logged-in affordance and no session cookies. Only now treat a
+        # visible sign-in prompt as logged out.
+        for selector in ("a:has-text('Sign in')", "text=Sign in >> nth=0"):
+            try:
+                if await self.page.locator(selector).count() > 0:
+                    return False
+            except Exception:
+                continue
+
+        return False
 
     async def _has_session_cookies(self) -> bool:
         """Heuristic cookie check used only when no UI affordance was found."""
@@ -299,7 +308,7 @@ class BuilderCenter:
                     entry = await self._read_activity_entry(locator.nth(index))
                 except Exception:
                     continue
-                if not entry:
+                if not entry or not self.is_real_article(entry):
                     continue
                 key = entry["url"] or entry["title"].lower()
                 if key in seen:
@@ -310,6 +319,24 @@ class BuilderCenter:
                     return activities
 
         return activities[:limit]
+
+    def is_real_article(self, entry: dict[str, str]) -> bool:
+        """Reject navigation chrome and non-article links.
+
+        The feed markup contains header links ("Workshops", "Community", ...)
+        that are not articles. A real article URL carries a content id, which
+        is the only reliable signal - titles alone are not enough.
+        """
+        url = (entry.get("url") or "").lower()
+        if not url or not url.startswith("http"):
+            return False
+        # Builder Center content URLs look like /content/<id>/<slug>
+        if re.search(r"/content/[A-Za-z0-9]{8,}", url):
+            return True
+        # Discussions are legitimate engagement targets too.
+        if "/discussion/" in url:
+            return True
+        return False
 
     async def _read_activity_entry(self, element: Any) -> dict[str, str] | None:
         """Extract ``{title, url, timestamp, content}`` from one DOM element."""
@@ -488,33 +515,55 @@ class BuilderCenter:
     PROFILE_PATH = "/profile"
 
     async def _capture_csrf(self) -> str | None:
-        """Load the profile page and capture the csrf token it sends."""
-        assert self.page is not None
+        """Load a Builder Center page and capture the csrf token it sends.
+
+        The site attaches ``x-csrf-token`` to every api.builder.aws.com call and
+        the token is valid session-wide, so we harvest it from whatever request
+        fires first. We navigate with ``wait_until='commit'`` and poll, because
+        the XHRs fire well before ``goto()`` would return.
+        """
+        if self.page is None:
+            return None
         captured: dict[str, str] = {}
 
         async def on_request(request: Any) -> None:
-            if "rms/badges" not in request.url:
+            if "api.builder.aws.com" not in request.url:
                 return
             try:
                 headers = await request.all_headers()
             except Exception:
                 return
             token = headers.get("x-csrf-token")
-            if token:
+            if token and "token" not in captured:
                 captured["token"] = token
 
         self.page.on("request", on_request)
         try:
-            await self.goto(urljoin(self.base_url, self.PROFILE_PATH))
-            for _ in range(40):  # up to ~8s waiting for the first XHR
+            for path in (self.PROFILE_PATH, "/"):
                 if "token" in captured:
-                    return captured["token"]
-                await asyncio.sleep(0.2)
+                    break
+                try:
+                    await self.page.goto(
+                        urljoin(self.base_url, path),
+                        timeout=NAV_TIMEOUT_MS,
+                        wait_until="commit",
+                    )
+                except Exception as exc:
+                    print(f"Navigation to {path} failed: {type(exc).__name__}")
+                    continue
+
+                for _ in range(50):  # up to ~10s per page
+                    if "token" in captured:
+                        break
+                    await asyncio.sleep(0.2)
         finally:
             try:
                 self.page.remove_listener("request", on_request)
             except Exception:
                 pass
+
+        if not captured.get("token"):
+            print("Could not capture the Builder Center csrf token")
         return captured.get("token")
 
     async def fetch_badge_progress(self) -> list[dict[str, Any]] | None:
@@ -621,8 +670,50 @@ class BuilderCenter:
         }
 
     async def get_badge_progress(self) -> dict[str, Any] | None:
-        """Return a full badge progress summary, or ``None`` if unavailable."""
+        """Return a full badge progress summary, or ``None`` if unavailable.
+
+        Tries the API first, then falls back to scraping the rendered page.
+        A cached copy from a previous successful run is used as a last resort so
+        a transient API failure does not lose data.
+        """
         rows = await self.fetch_badge_progress()
-        if rows is None:
+        if rows:
+            self._badge_cache = self.summarize_badge_rows(rows)
+            return self._badge_cache
+
+        from_scrape = await self._badge_progress_from_dom()
+        if from_scrape:
+            self._badge_cache = from_scrape
+            return from_scrape
+
+        if self._badge_cache:
+            print("Using the badge snapshot cached during this run")
+            return self._badge_cache
+        return None
+
+    async def _badge_progress_from_dom(self) -> dict[str, Any] | None:
+        """Last-resort parse of the rendered rewards panel.
+
+        Returns a summary only when the page exposes an explicit granted/total
+        pattern; anything less ambiguous returns None rather than guessing.
+        """
+        if self.page is None:
             return None
-        return self.summarize_badge_rows(rows)
+        try:
+            await self._dismiss_consent()
+            body = await self.page.inner_text("body")
+        except Exception:
+            return None
+
+        # Look for "5 of 21 badges" style text, never a bare number.
+        match = re.search(r"(\d+)\s+of\s+(\d+)\s+badges", body, re.I)
+        if match:
+            granted, total = int(match.group(1)), int(match.group(2))
+            return {
+                "granted": granted,
+                "total": total,
+                "categories": {},
+                "badges": [],
+                "source": "dom",
+            }
+        return None

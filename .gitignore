@@ -63,3 +63,6 @@ auth/*.json
 _body.txt
 _profile.txt
 _*.py
+
+# per-user approval decisions - not worth committing
+data/approvals.json

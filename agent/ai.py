@@ -63,16 +63,50 @@ class AIAssistant:
     def is_configured(self) -> bool:
         return bool(self.api_key and self.model)
     def _chat(self, messages: list[dict[str, str]], max_tokens: int = 800, temperature: float = 0.4) -> str:
-        """Perform a chat completion and return the assistant text.
+        """Perform a chat completion, falling back across free models.
 
-        Raises ``AIError`` with a sanitized message on any failure.
+        OpenRouter retires ``:free`` slugs and rate-limits the survivors, so a
+        single configured model is not reliable enough on its own. We try the
+        configured model first, then walk the free fallback list.
+
+        Raises ``AIError`` with a sanitized message if every attempt fails.
         """
         if not self.is_configured():
-            raise AIError("OpenRouter is not configured (missing OPENROUTER_API_KEY or OPENROUTER_MODEL)")
+            raise AIError(
+                "OpenRouter is not configured (missing OPENROUTER_API_KEY or OPENROUTER_MODEL)"
+            )
 
+        attempts: list[str] = [self.model]
+        attempts += [m for m in DEFAULT_FREE_MODELS if m != self.model]
+        # Drop known-retired slugs without spending an API call on them.
+        attempts = [m for m in attempts if m not in RETIRED_MODELS]
+
+        last_error = ""
+        for model in attempts:
+            try:
+                return self._chat_once(model, messages, max_tokens, temperature)
+            except AIError as exc:
+                last_error = str(exc)
+                message = str(exc)
+                # 401/402/403 mean the key itself is the problem: retrying other
+                # models cannot help, so surface it immediately.
+                if any(code in message for code in ("HTTP 401", "HTTP 402", "HTTP 403")):
+                    raise
+                continue
+
+        raise AIError(f"All OpenRouter models failed. Last error: {last_error}")
+
+    def _chat_once(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """One completion attempt against a specific model."""
         payload = json.dumps(
             {
-                "model": self.model,
+                "model": model,
                 "messages": messages,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
@@ -97,7 +131,7 @@ class AIAssistant:
         except error.HTTPError as exc:
             detail = _safe_error_body(exc)
             raise AIError(
-                f"OpenRouter HTTP {exc.code} for model '{self.model}'"
+                f"OpenRouter HTTP {exc.code} for model '{model}'"
                 + (f": {detail}" if detail else "")
                 + _hint_for_status(exc.code)
             ) from None
@@ -106,7 +140,8 @@ class AIAssistant:
         except Exception as exc:  # pragma: no cover - unexpected transport error
             raise AIError(f"OpenRouter request failed: {type(exc).__name__}") from None
 
-        return _extract_content(body, self.model)
+        return _extract_content(body, model)
+
     def summarize_activity(self, title: str, content: str = "") -> str:
         """Summarize a Builder Center post in 2-4 sentences."""
         user = (
@@ -276,3 +311,30 @@ def _hint_for_status(code: int) -> str:
         503: " (no provider available - the free model may be temporarily unavailable)",
     }
     return hints.get(code, "")
+
+# Free models to try, best first. OpenRouter retires :free slugs regularly, so
+# the client walks this list instead of failing when one disappears.
+DEFAULT_FREE_MODELS: tuple[str, ...] = (
+    "google/gemma-4-26b-a4b-it:free",
+    "qwen/qwen3.8-27b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "google/gemma-4-31b-it:free",
+    "liquid/lfm-2.5-2.6b:free",
+)
+
+# Model slugs that are known-retired. Skipped without burning an API call.
+RETIRED_MODELS = frozenset({"google/gemma-4-26b-a4b-it:free"})
+
+
+def list_free_models(api_key: str, timeout: int = 20) -> list[str]:
+    """Fetch the free-tier model list from OpenRouter. Best effort."""
+    url = "https://openrouter.ai/api/v1/models"
+    req = request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    return sorted(
+        m["id"] for m in data.get("data", []) if str(m.get("id", "")).endswith(":free")
+    )

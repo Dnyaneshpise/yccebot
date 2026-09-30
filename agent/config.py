@@ -37,7 +37,7 @@ class Config:
 
     # --- OpenRouter ---
     openrouter_api_key: str = ""
-    openrouter_model: str = "google/gemini-2.5-flash-lite:free"
+    openrouter_model: str = "google/gemma-4-26b-a4b-it:free"
 
     # --- Telegram ---
     telegram_bot_token: str = ""
@@ -65,7 +65,7 @@ class Config:
         return cls(
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
             openrouter_model=os.getenv(
-                "OPENROUTER_MODEL", "google/gemini-2.5-flash-lite:free"
+                "OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free"
             ),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),

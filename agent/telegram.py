@@ -8,6 +8,7 @@ process, so a raw exception containing a token can never reach the chat.
 from __future__ import annotations
 
 import json
+from typing import Any
 from urllib import error, parse, request
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -57,6 +58,32 @@ class TelegramNotifier:
         for chunk in chunks or ["(empty message)"]:
             ok = self._post(chunk) and ok
         return ok
+    def _api(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call a Bot API method and return the parsed response.
+
+        Raises on transport or API failure so callers can decide how to
+        handle it. ``_post`` builds on this and swallows errors instead.
+        """
+        if not self.is_configured():
+            raise TelegramError("Telegram is not configured")
+
+        url = f"{TELEGRAM_API}/bot{self.token}/{method}"
+        try:
+            with request.urlopen(
+                url, data=parse.urlencode(payload).encode("utf-8"), timeout=self.timeout
+            ) as response:
+                body = json.loads(response.read().decode("utf-8", errors="replace"))
+        except error.HTTPError as exc:
+            raise TelegramError(f"Telegram HTTP {exc.code}: {_safe_body(exc)}") from None
+        except error.URLError as exc:
+            raise TelegramError(f"Telegram request failed: {exc.reason}") from None
+        except ValueError:
+            raise TelegramError("Telegram returned a non-JSON response") from None
+
+        if not body.get("ok"):
+            raise TelegramError(str(body.get("description", "unknown API error")))
+        return body
+
     def _post(self, text: str) -> bool:
         """Post a single chunk to Telegram."""
         url = f"{TELEGRAM_API}/bot{self.token}/sendMessage"
@@ -182,6 +209,42 @@ class TelegramNotifier:
             f"Run failed or degraded:\n{safe[:1500]}"
         )
 
+
+    def send_approval_request(self, proposal: Any) -> int | None:
+        """Send a proposal with clear Approve / Reject instructions.
+
+        Returns the Telegram message id, or None on failure. The message id is
+        what the user replies to when approving, so the decision stays
+        unambiguous.
+        """
+        if not self.is_configured():
+            print("Telegram is not configured; skipping approval request")
+            return None
+
+        text = (
+            "\U0001f514 Action needed\n\n"
+            + proposal.describe()
+            + "\n\nRead the article, then reply with:\n"
+            f"  approve {proposal.id}   - do this\n"
+            f"  reject  {proposal.id}   - skip it\n"
+        )
+        text = self.redact(text)
+        try:
+            result = self._api("sendMessage", {"chat_id": self.chat_id, "text": text})
+        except Exception as exc:
+            print(f"Could not send approval request: {type(exc).__name__}")
+            return None
+        return result.get("result", {}).get("message_id")
+
+    def send_execution_report(self, results: list[tuple[str, str]]) -> bool:
+        """Report what the agent did after executing approvals."""
+        if not results:
+            return True
+        lines = ["\U0001f4c4 Approved actions", ""]
+        for proposal_id, outcome in results[:10]:
+            icon = "\u2705" if outcome.startswith("OK") else "\u26a0\ufe0f"
+            lines.append(f"{icon} {proposal_id}: {outcome}")
+        return self.send_message("\n".join(lines))
 
 def _safe_body(exc: "error.HTTPError") -> str:
     """Read a short slice of a Telegram HTTP error body."""
