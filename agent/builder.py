@@ -843,18 +843,30 @@ class BuilderCenter:
 
         # Prefer the banner's own "Accept"/"Decline" buttons - that records the
         # choice in the cookie so it stops coming back.
-        for label in ("Accept", "Decline", "Accept all", "Continue"):
-            try:
-                button = self.page.locator(f"button:has-text('{label}')").first
-                if await button.count() > 0 and await button.is_visible():
+        # Scope this to the consent widget. A page-wide "Accept" search can hit
+        # an unrelated control, and the widget has to be dismissed before any
+        # other element is reachable.
+        for label in ("Accept all", "Accept", "Continue", "Decline"):
+            for scope in ("#awsccc-cb-c", ".awsccc-tab-helper", "body"):
+                try:
+                    button = self.page.locator(f"{scope} button:has-text('{label}')").first
+                    if await button.count() == 0 or not await button.is_visible():
+                        continue
                     await button.click(timeout=6000)
-                    await self.page.wait_for_timeout(700)
+                    await self.page.wait_for_timeout(800)
                     break
-            except Exception:
-                continue
+                except Exception:
+                    continue
 
         removed = False
         selectors = (
+            # AWS's own cookie widget (id awsccc-cb-c / class awsccc-tab-helper).
+            # This is the one that actually appears on Builder Center and it
+            # covers the whole page, so it must go before anything else.
+            "#awsccc-cb-c",
+            ".awsccc-tab-helper",
+            "[id^='awsccc']",
+            "[class*='awsccc']",
             "[data-testid='ccba-content']",
             "[data-testid='ccba-footer']",
             "[class*='cbbas']",
