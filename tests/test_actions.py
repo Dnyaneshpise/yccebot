@@ -338,3 +338,66 @@ def test_is_real_article_rejects_chrome():
         {"url": ""},
     ):
         assert b.is_real_article(bad) is False, bad
+
+# ----------------------------------------------------------------------
+# Badge API permission handling
+# ----------------------------------------------------------------------
+def test_is_permission_denied_detects_iam_deny():
+    from agent.builder import _is_permission_denied
+
+    body = ("User is not authorized to access this resource with an explicit "
+            "deny in an identity-based policy")
+    assert _is_permission_denied(403, body) is True
+    assert _is_permission_denied(401, body) is True
+
+
+def test_is_permission_denied_ignores_token_errors():
+    """A stale token is worth retrying; an identity deny is not."""
+    from agent.builder import _is_permission_denied
+
+    assert _is_permission_denied(401, "[Unauthorized] Unauthorized.") is False
+    assert _is_permission_denied(403, "Missing Authentication Token") is False
+    assert _is_permission_denied(404, "not found") is False
+    assert _is_permission_denied(429, "rate limited") is False
+    assert _is_permission_denied(200, "") is False
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("You have 5 of 21 badges", {"granted": 5, "total": 21}),
+        ("5 of 21 badges earned", {"granted": 5, "total": 21}),
+        ("Badges: 7 of 21", {"granted": 7, "total": 21}),
+        ("3/21 badges complete", {"granted": 3, "total": 21}),
+    ],
+)
+def test_parse_badge_text(text, expected):
+    from agent.builder import BuilderCenter
+
+    parsed = BuilderCenter._parse_badge_text(text)
+    assert parsed is not None
+    assert parsed["granted"] == expected["granted"]
+    assert parsed["total"] == expected["total"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "Sign in to AWS Builder Center",
+        "This article has 2474 likes and 1782 comments",   # a bare number
+        "21 of 5 badges",                                 # granted > total
+        "no numbers at all here",
+    ],
+)
+def test_parse_badge_text_refuses_ambiguous(text):
+    """Never infer a badge count from unrelated numbers."""
+    from agent.builder import BuilderCenter
+
+    assert BuilderCenter._parse_badge_text(text) is None
+
+
+def test_permission_denied_starts_false():
+    from agent.builder import BuilderCenter
+
+    assert BuilderCenter()._permission_denied is False

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
-from .rewards import parse_badge_count
+from .rewards import MAX_SANE_BADGES, parse_badge_count
 
 if TYPE_CHECKING:  # pragma: no cover
     from playwright.async_api import Browser, BrowserContext, Page
@@ -48,6 +48,9 @@ class BuilderCenter:
         self.context: BrowserContext | None = None
         self.page: Page | None = None
         self._badge_cache: dict[str, Any] | None = None
+        # Set when the badge API refuses this account outright. Retrying cannot
+        # help, so later runs skip the API and go straight to the DOM fallback.
+        self._permission_denied: bool = False
         # Tracks whether the current page is the feed, so discovery knows when
         # it must navigate before scanning.
         self._on_feed: bool = False
@@ -669,7 +672,23 @@ class BuilderCenter:
                 return None
 
             if response.status != 200:
-                print(f"Badge API returned HTTP {response.status}")
+                detail = ""
+                try:
+                    detail = (await response.text())[:200]
+                except Exception:
+                    pass
+                if _is_permission_denied(response.status, detail):
+                    # The account is not authorised for this endpoint at all.
+                    # Retrying or changing headers cannot help, so say so
+                    # plainly and let the caller fall back to the DOM.
+                    self._permission_denied = True
+                    print(
+                        "Badge API is denied for this account (403 identity-based "
+                        "policy). This is a server-side permission, not a token "
+                        "issue - falling back to the rendered rewards page."
+                    )
+                    return None
+                print(f"Badge API returned HTTP {response.status} {detail[:120]}")
                 return None
 
             try:
@@ -737,16 +756,18 @@ class BuilderCenter:
         }
 
     async def get_badge_progress(self) -> dict[str, Any] | None:
-        """Return a full badge progress summary, or ``None`` if unavailable.
+        """Return a badge progress summary, or ``None`` if unavailable.
 
-        Tries the API first, then falls back to scraping the rendered page.
-        A cached copy from a previous successful run is used as a last resort so
-        a transient API failure does not lose data.
+        Tries the API first, falls back to the rendered page, and finally to a
+        snapshot taken earlier in the run. Once the API has refused this account
+        we stop calling it, so a known-denied account does not pay the retry
+        cost on every run.
         """
-        rows = await self.fetch_badge_progress()
-        if rows:
-            self._badge_cache = self.summarize_badge_rows(rows)
-            return self._badge_cache
+        if not self._permission_denied:
+            rows = await self.fetch_badge_progress()
+            if rows:
+                self._badge_cache = self.summarize_badge_rows(rows)
+                return self._badge_cache
 
         from_scrape = await self._badge_progress_from_dom()
         if from_scrape:
@@ -759,30 +780,48 @@ class BuilderCenter:
         return None
 
     async def _badge_progress_from_dom(self) -> dict[str, Any] | None:
-        """Last-resort parse of the rendered rewards panel.
+        """Last-resort parse of the rendered page.
 
-        Returns a summary only when the page exposes an explicit granted/total
-        pattern; anything less ambiguous returns None rather than guessing.
+        Used when the badge API is not authorised for the account. Only an
+        explicit granted/total phrase is accepted - a bare number on these pages
+        is usually a like count, so we refuse rather than guess.
         """
         if self.page is None:
             return None
-        try:
-            await self._dismiss_consent()
-            body = await self.page.inner_text("body")
-        except Exception:
-            return None
 
-        # Look for "5 of 21 badges" style text, never a bare number.
-        match = re.search(r"(\d+)\s+of\s+(\d+)\s+badges", body, re.I)
-        if match:
+        for path in (self.PROFILE_PATH, "/student-rewards"):
+            if not await self.goto(urljoin(self.base_url, path)):
+                continue
+            await self._dismiss_consent()
+            for _ in range(8):  # the SPA renders late, so poll briefly
+                try:
+                    body = await self.page.inner_text("body")
+                except Exception:
+                    break
+                parsed = self._parse_badge_text(body)
+                if parsed:
+                    parsed["source"] = f"dom:{path}"
+                    return parsed
+                await asyncio.sleep(1.5)
+        return None
+
+    @staticmethod
+    def _parse_badge_text(body: str) -> dict[str, Any] | None:
+        """Extract a granted/total badge count from visible page text."""
+        if not body:
+            return None
+        patterns = (
+            r"(\d+)\s+of\s+(\d+)\s+badges?\b",
+            r"badges?\s*[:\-]?\s*(\d+)\s*(?:of|/)\s*(\d+)",
+            r"\b(\d+)\s*/\s*(\d+)\s*badges?\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, body, re.IGNORECASE)
+            if not match:
+                continue
             granted, total = int(match.group(1)), int(match.group(2))
-            return {
-                "granted": granted,
-                "total": total,
-                "categories": {},
-                "badges": [],
-                "source": "dom",
-            }
+            if 0 <= granted <= total <= MAX_SANE_BADGES:
+                return {"granted": granted, "total": total, "categories": {}, "badges": []}
         return None
     # ------------------------------------------------------------------
     # Approved engagement actions
@@ -944,3 +983,24 @@ class BuilderCenter:
             "UNSUPPORTED: wish voting is not implemented yet - the live wish "
             "controls were not verified, so no click was attempted"
         )
+
+# Substrings AWS uses when a request is refused by an identity-based policy
+# rather than by a missing/expired token.
+_DENY_MARKERS = (
+    "explicit deny",
+    "identity-based policy",
+    "not authorized to access this resource",
+)
+
+
+def _is_permission_denied(status: int, body: str) -> bool:
+    """True when a 401/403 is an authorisation refusal, not a stale token.
+
+    Distinguishing these matters: a stale token is worth retrying with a fresh
+    one, whereas an identity-policy deny will never succeed no matter what the
+    client sends.
+    """
+    if status not in (401, 403):
+        return False
+    text = (body or "").lower()
+    return any(marker in text for marker in _DENY_MARKERS)
