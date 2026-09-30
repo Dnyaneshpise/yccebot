@@ -249,6 +249,11 @@ async def run_approved(
 _APPROVE_RE = re.compile(r"^\s*/?(?:approve|yes|do)\s+([A-Za-z0-9_-]+)\s*$", re.I)
 _REJECT_RE = re.compile(r"^\s*/?(?:reject|no|skip)\s+([A-Za-z0-9_-]+)\s*$", re.I)
 
+# A bare proposal id ("22e20ddcac") counts as approval. People reply with just
+# the id, and rejecting requires typing the word, so the risky direction is
+# always the explicit one.
+_BARE_ID_RE = re.compile(r"^\s*/?([A-Za-z0-9]{6,})([A-Za-z0-9_-]*)\s*$")
+
 
 def parse_decision(text: str) -> tuple[str, str] | None:
     """Parse an approval/rejection command.
@@ -258,12 +263,32 @@ def parse_decision(text: str) -> tuple[str, str] | None:
     """
     if not text or not isinstance(text, str):
         return None
+
+    def _plausible_id(value: str) -> bool:
+        """Only accept something shaped like an id we actually issued.
+
+        Every proposal id is 10 hex characters. Requiring that shape is what
+        stops "yes please" or "thanks" from being treated as an approval.
+        """
+        return bool(re.fullmatch(r"[A-Za-z0-9_-]{6,32}", value or "")) and bool(
+            re.search(r"\d", value or "")
+        )
+
     match = _APPROVE_RE.match(text)
-    if match:
+    if match and _plausible_id(match.group(1)):
         return "approve", match.group(1)
     match = _REJECT_RE.match(text)
-    if match:
+    if match and _plausible_id(match.group(1)):
         return "reject", match.group(1)
+
+    # Bare id => approve. This is how people actually reply, so it has to work.
+    # We require a digit and a plausible length so "thanks" or "ok" cannot be
+    # read as an approval.
+    match = _BARE_ID_RE.match(text)
+    if match:
+        candidate = (match.group(1) + (match.group(2) or "")).strip()
+        if _plausible_id(candidate):
+            return "approve", candidate
     return None
 
 

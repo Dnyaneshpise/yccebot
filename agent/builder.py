@@ -870,6 +870,10 @@ class BuilderCenter:
 
         Idempotent: an already-liked article is reported as skipped rather than
         toggled, so re-running can never unlike something on purpose.
+
+        The outcome is verified: a click the site silently discards must be
+        reported as a failure, otherwise a badge streak would appear to advance
+        when nothing actually happened.
         """
         if not await self.goto(url):
             return "FAILED: could not open article"
@@ -883,18 +887,44 @@ class BuilderCenter:
             pressed = await control.get_attribute("aria-pressed")
             if str(pressed).lower() == "true":
                 return "SKIPPED: already liked"
-            await control.click(timeout=15000)
-        except Exception as exc:
-            return f"FAILED: {type(exc).__name__}"
+        except Exception:
+            pass
 
-        await self.page.wait_for_timeout(1500)
+        # Watch for the write request so a silent rejection is detectable.
+        writes = []
+
+        async def on_response(response):
+            if "api.builder.aws.com" in response.url.lower() and response.request.method in ("POST", "PUT"):
+                writes.append(response.status)
+
+        self.page.on("response", on_response)
+        try:
+            try:
+                await control.scroll_into_view_if_needed(timeout=8000)
+                await self.page.wait_for_timeout(500)
+                await control.click(timeout=15000)
+            except Exception as exc:
+                return "FAILED: " + type(exc).__name__
+            await self.page.wait_for_timeout(4000)
+        finally:
+            try:
+                self.page.remove_listener("response", on_response)
+            except Exception:
+                pass
+
         try:
             now = await control.get_attribute("aria-pressed")
         except Exception:
             now = None
+
         if str(now).lower() == "true":
             return "OK: liked"
-        return f"UNCONFIRMED: aria-pressed={now} after click"
+        if any(status >= 400 for status in writes):
+            return ("FAILED: Builder Center rejected the like (HTTP %d). "
+                    "This account is not permitted to like through the API." % max(writes))
+        return ("FAILED: the click did not register (aria-pressed unchanged and "
+                "no write request completed). The site appears to have blocked it.")
+
     async def post_comment(self, url: str, text: str) -> str:
         """Post a comment the user drafted and approved.
 

@@ -218,8 +218,8 @@ def test_is_decision_for_rejects_wrong_id():
     """An approval for proposal A must never apply to proposal B."""
     from agent.actions import is_decision_for
 
-    assert is_decision_for("approve AAA", "BBB") is None
-    assert is_decision_for("approve AAA", "AAA") == (True, "AAA")
+    assert is_decision_for("approve aaa111", "bbb222") is None
+    assert is_decision_for("approve aaa111", "aaa111") == (True, "aaa111")
 
 
 # ----------------------------------------------------------------------
@@ -401,3 +401,171 @@ def test_permission_denied_starts_false():
     from agent.builder import BuilderCenter
 
     assert BuilderCenter()._permission_denied is False
+
+# ----------------------------------------------------------------------
+# Reading approval replies back from Telegram
+# ----------------------------------------------------------------------
+def test_parse_decision_accepts_bare_id():
+    """Users reply with just the id, so that must work."""
+    from agent.actions import parse_decision
+
+    assert parse_decision("22e20ddcac") == ("approve", "22e20ddcac")
+
+
+@pytest.mark.parametrize("text", ["thanks", "ok", "hello", "/start", "sure", "1", "yes please"])
+def test_parse_decision_ignores_non_ids(text):
+    """Ordinary chat must never be read as an approval."""
+    from agent.actions import parse_decision
+
+    assert parse_decision(text) is None
+
+
+def _update(text, chat="1554312544", uid=1):
+    return {"update_id": uid, "message": {"chat": {"id": chat}, "text": text}}
+
+
+def test_parse_incoming_decisions():
+    from agent.telegram import TelegramNotifier
+
+    t = TelegramNotifier("123:ABC", "1554312544")
+    updates = [
+        _update("/start", uid=1),
+        _update("22e20ddcac", uid=2),
+        _update("reject abc123", uid=3),
+    ]
+    got = t.parse_incoming_decisions(updates)
+    assert [(d, p) for d, p, _ in got] == [("approve", "22e20ddcac"), ("reject", "abc123")]
+
+
+def test_parse_incoming_ignores_other_chats():
+    """Someone else in another chat must not be able to approve actions."""
+    from agent.telegram import TelegramNotifier
+
+    t = TelegramNotifier("123:ABC", "1554312544")
+    assert t.parse_incoming_decisions([_update("22e20ddcac", chat="999")]) == []
+
+
+def test_parse_incoming_handles_empty():
+    from agent.telegram import TelegramNotifier
+
+    t = TelegramNotifier("123:ABC", "1554312544")
+    assert t.parse_incoming_decisions([]) == []
+    assert t.parse_incoming_decisions([{"update_id": 1}]) == []
+
+
+def test_get_updates_unconfigured_is_safe():
+    from agent.telegram import TelegramNotifier
+
+    assert TelegramNotifier("", "").get_updates() == []
+
+
+async def test_drain_inbox_records_and_executes(monkeypatch, tmp_path):
+    """A Telegram reply must become a recorded approval, then an action."""
+    import agent.main as m
+    from agent.actions import ApprovalStore, Proposal
+
+    store = ApprovalStore(tmp_path / "approvals.json")
+    store.add(Proposal(id="abc123", kind="like", title="T", url="https://x/1"))
+
+    class FakeTelegram:
+        def __init__(self):
+            self.acked = None
+
+        def get_updates(self, *a, **k):
+            return [_update("abc123", uid=7)]
+
+        def acknowledge(self, last):
+            self.acked = last
+
+        def parse_incoming_decisions(self, updates):
+            return [("approve", "abc123", 7)]
+
+        def send_message(self, *a, **k):
+            return True
+
+        def send_execution_report(self, *a, **k):
+            return True
+
+    tg = FakeTelegram()
+    done = []
+
+    class FakeBuilder:
+        async def like_article(self, url):
+            done.append(url)
+            return "OK: liked"
+
+    result = await m.drain_telegram_inbox(None, FakeBuilder(), tg, store)
+    assert result == 1
+    assert done == ["https://x/1"]
+    assert tg.acked == 7
+    assert store.get("abc123").result == "OK: liked"
+
+
+async def test_drain_inbox_ignores_unknown_id(tmp_path):
+    """A reply for a proposal we do not have must be dropped, not acted on."""
+    import agent.main as m
+    from agent.actions import ApprovalStore
+
+    store = ApprovalStore(tmp_path / "approvals.json")
+
+    class FakeTelegram:
+        def get_updates(self, *a, **k):
+            return [_update("deadbeef", uid=3)]
+
+        def acknowledge(self, last):
+            pass
+
+        def parse_incoming_decisions(self, updates):
+            return [("approve", "deadbeef", 3)]
+
+        def send_message(self, *a, **k):
+            return True
+
+    called = []
+
+    class FakeBuilder:
+        async def like_article(self, url):
+            called.append(url)
+            return "OK"
+
+    assert await m.drain_telegram_inbox(None, FakeBuilder(), FakeTelegram(), store) == 0
+    assert called == []
+
+
+async def test_drain_inbox_rejects_perform_nothing(tmp_path):
+    import agent.main as m
+    from agent.actions import ApprovalStore, Proposal
+
+    store = ApprovalStore(tmp_path / "approvals.json")
+    store.add(Proposal(id="abc123", kind="like", title="T", url="https://x/1"))
+
+    class FakeTelegram:
+        def get_updates(self, *a, **k):
+            return [_update("reject abc123", uid=4)]
+
+        def acknowledge(self, last):
+            pass
+
+        def parse_incoming_decisions(self, updates):
+            return [("reject", "abc123", 4)]
+
+    called = []
+
+    class FakeBuilder:
+        async def like_article(self, url):
+            called.append(url)
+            return "OK"
+
+    assert await m.drain_telegram_inbox(None, FakeBuilder(), FakeTelegram(), store) == 0
+    assert called == []
+
+def test_like_article_reports_failure_not_false_success():
+    """A silently-discarded click must never be reported as a success."""
+    import asyncio
+    from agent.builder import BuilderCenter
+
+    b = BuilderCenter()
+    result = asyncio.run(b.like_article("https://builder.aws.com/content/abc123/x"))
+    # no page attached, so nothing can be liked
+    assert result.startswith("FAILED")
+    assert "OK: liked" not in result

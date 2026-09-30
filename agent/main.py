@@ -311,6 +311,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Suggest actions for the badges closest to completion.")
     parser.add_argument("--execute", action="store_true",
                         help="Perform only the actions you already approved.")
+    parser.add_argument("--inbox", action="store_true",
+                        help="Read approval/rejection replies you sent in Telegram.")
     parser.add_argument("--accept", metavar="ID", default=None,
                         help="Approve a proposal by id.")
     parser.add_argument("--reject", metavar="ID", default=None,
@@ -462,6 +464,44 @@ async def approval_mode(config: Config, action: str) -> int:
         await builder.close()
 
 
+async def inbox_mode(config: Config) -> int:
+    """Read Telegram replies and perform whatever you approved."""
+    from agent.actions import ApprovalStore
+
+    if not config.telegram_bot_token or not config.telegram_chat_id:
+        log("ERROR: Telegram is not configured; cannot read your replies")
+        return 3
+
+    if config.validate():
+        log("ERROR: missing AWS session; cannot perform actions")
+        return 3
+
+    write_storage_state(config)
+    _, telegram, _ = build_components(config)
+    store = ApprovalStore(approvals_path(config))
+
+    builder = BuilderCenter(
+        base_url=config.builder_url,
+        headless=config.headless,
+        user_agent=config.user_agent or None,
+    )
+    try:
+        await builder.initialize(str(config.resolved_storage_state_path))
+        done = await drain_telegram_inbox(config, builder, telegram, store)
+        log(f"Applied {done} approved action(s)")
+        return 0
+    except AuthExpiredError as exc:
+        log(f"ERROR: {exc}")
+        telegram.send_auth_expired()
+        return 2
+    except Exception as exc:
+        log(f"ERROR: {type(exc).__name__}: {exc}")
+        telegram.send_error(f"{type(exc).__name__}: {exc}")
+        return 1
+    finally:
+        await builder.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
     args = parse_args(argv)
@@ -485,6 +525,9 @@ def main(argv: list[str] | None = None) -> int:
         log(f"{'APPROVED' if action == 'approve' else 'REJECTED'}: {proposal.title}")
         log("Run  python -m agent.main --execute  to perform approved actions")
         return 0
+
+    if args.inbox:
+        return asyncio.run(inbox_mode(config))
 
     if args.propose or args.execute:
         action = "propose" if args.propose else "execute"
@@ -515,3 +558,56 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+async def drain_telegram_inbox(
+    config: Config,
+    builder: BuilderCenter,
+    telegram: TelegramNotifier,
+    store: ApprovalStore,
+    execute_immediately: bool = True,
+) -> int:
+    """Read decisions you replied with in Telegram and act on them.
+
+    This is the counterpart to :func:`propose_actions`: the proposal is sent to
+    Telegram, you reply, and this turns that reply into a recorded decision.
+    Replies are consumed even when the id is unknown, so the queue cannot grow
+    without bound.
+    """
+    updates = telegram.get_updates()
+    if not updates:
+        log("No new Telegram replies")
+        return 0
+
+    last_update_id = max(int(u.get("update_id", 0)) for u in updates)
+    decisions = telegram.parse_incoming_decisions(updates)
+    telegram.acknowledge(last_update_id)
+
+    if not decisions:
+        log(f"Read {len(updates)} Telegram update(s); none were approval replies")
+        return 0
+
+    log(f"Found {len(decisions)} decision(s) in Telegram")
+    for decision, proposal_id, _update_id in decisions:
+        proposal = store.get(proposal_id)
+        if proposal is None:
+            log(f"  {decision} {proposal_id}: no such proposal (ignored)")
+            telegram.send_message(
+                f"Ignored '{decision} {proposal_id}' - I have no proposal with "
+                "that id. Run a new proposal and use the id it shows you."
+            )
+            continue
+
+        if proposal.result is not None:
+            log(f"  {decision} {proposal_id}: already actioned, skipping")
+            continue
+
+        store.decide(proposal_id, decision == "approve")
+        verb = "APPROVED" if decision == "approve" else "REJECTED"
+        log(f"  {verb}: {proposal.title}")
+
+    if not execute_immediately:
+        return 0
+
+    results = await run_approved_actions(builder, telegram, store)
+    return len(results)

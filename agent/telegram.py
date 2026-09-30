@@ -246,6 +246,60 @@ class TelegramNotifier:
             lines.append(f"{icon} {proposal_id}: {outcome}")
         return self.send_message("\n".join(lines))
 
+    # ------------------------------------------------------------------
+    # Reading your replies back
+    #
+    # The bot asks you to reply "approve <id>" / "reject <id>". These
+    # methods read those replies. Without them the messages queue up in
+    # Telegram forever and nothing ever happens.
+    # ------------------------------------------------------------------
+    def get_updates(self, offset: int = 0, timeout: int = 0) -> list[dict[str, Any]]:
+        """Fetch pending updates. ``offset`` acknowledges everything before it.
+
+        Returns [] on any failure: a missing reply must never crash a run.
+        """
+        if not self.is_configured():
+            return []
+        payload = {"timeout": timeout, "offset": offset, "allowed_updates": '["message"]'}
+        try:
+            result = self._api("getUpdates", payload)
+        except TelegramError as exc:
+            print(f"Could not read Telegram updates: {exc}")
+            return []
+        updates = result.get("result")
+        return updates if isinstance(updates, list) else []
+
+    def acknowledge(self, last_update_id: int) -> None:
+        """Mark updates as seen so they are not returned again."""
+        if last_update_id <= 0:
+            return
+        self.get_updates(offset=last_update_id + 1, timeout=0)
+
+    def parse_incoming_decisions(self, updates: list[dict[str, Any]]) -> list[tuple[str, str, int]]:
+        """Turn raw updates into ``(decision, proposal_id, update_id)`` triples.
+
+        Only messages from the configured chat are considered, and the id must
+        look like one we issued, so ordinary chat cannot approve an action.
+        """
+        from .actions import parse_decision
+
+        results: list[tuple[str, str, int]] = []
+        for update in updates or []:
+            message = update.get("message") or update.get("edited_message")
+            if not isinstance(message, dict):
+                continue
+            chat = (message.get("chat") or {}).get("id")
+            if str(chat) != str(self.chat_id):
+                continue
+            text = message.get("text") or ""
+            parsed = parse_decision(text)
+            if parsed is None:
+                continue
+            decision, proposal_id = parsed
+            results.append((decision, proposal_id, int(update.get("update_id", 0))))
+        return results
+
+
 def _safe_body(exc: "error.HTTPError") -> str:
     """Read a short slice of a Telegram HTTP error body."""
     try:
