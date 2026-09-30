@@ -913,6 +913,30 @@ class BuilderCenter:
         except Exception:
             return None
 
+    async def _is_control_covered(self, control: Any) -> bool:
+        """True when something invisible still sits over the control.
+
+        Used to tell "an overlay ate the click" apart from "the site refused
+        the request", which otherwise produce the same symptom.
+        """
+        if self.page is None:
+            return False
+        try:
+            box = await control.bounding_box()
+            if not box:
+                return False
+            cx = box["x"] + box["width"] / 2
+            cy = box["y"] + box["height"] / 2
+            return not await self.page.evaluate(
+                """([x, y]) => {
+                    const el = document.elementFromPoint(x, y);
+                    return el === null;
+                }""",
+                [cx, cy],
+            )
+        except Exception:
+            return False
+
     async def like_article(self, url: str) -> str:
         """Like one article. Called only for an approved proposal.
 
@@ -970,8 +994,18 @@ class BuilderCenter:
         if any(status >= 400 for status in writes):
             return ("FAILED: Builder Center rejected the like (HTTP %d). "
                     "This account is not permitted to like through the API." % max(writes))
-        return ("FAILED: the click did not register (aria-pressed unchanged and "
-                "no write request completed). The site appears to have blocked it.")
+
+        # Distinguish an overlay still covering the control from a request
+        # that the site simply never accepted.
+        try:
+            covered = await self._is_control_covered(control)
+        except Exception:
+            covered = False
+        if covered:
+            return ("FAILED: a page overlay is intercepting clicks (the consent "
+                    "banner is probably still up)")
+        return ("FAILED: the click did not register (nothing intercepted it, but "
+                "Builder Center did not persist the like)")
 
     async def post_comment(self, url: str, text: str) -> str:
         """Post a comment the user drafted and approved.
