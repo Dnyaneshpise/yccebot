@@ -1,0 +1,55 @@
+name: Cloud Write Probe
+
+# One experiment: can a cloud-launched browser perform a real write on the
+# user's Builder Center account? Runs on GitHub's own infrastructure.
+# Manual only - never scheduled, so it cannot repeat unprompted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      article_url:
+        description: "Article URL to attempt one like on"
+        required: true
+        default: "https://builder.aws.com/content/3JOA2YIq3nZi8j5igxwMFlK2lPh/weekend-challenge-what-made-shipping-click"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe cloud writes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run probe
+        env:
+          AWS_STORAGE_STATE_B64: ${{ secrets.AWS_STORAGE_STATE_B64 }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+          PROBE_ARTICLE_URL: ${{ inputs.article_url }}
+        run: python scripts/cloud_probe.py "${{ inputs.article_url }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f data/cloud_probe_result.json ]; then
+            echo "### Cloud probe result" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat data/cloud_probe_result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
