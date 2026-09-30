@@ -361,13 +361,24 @@ async def propose_actions(
         if not url:
             continue
 
+        # Never propose text-bearing actions without the text. An empty draft
+        # would be posted publicly as a blank comment, and the proposal would
+        # be un-actionable even if the user approved it.
+        text = (draft.get("comment") or "").strip() if kind in ("comment", "article") else ""
+        if kind in ("comment", "article") and not text:
+            log(
+                f"Skipping {kind} proposal for '{activity.get('title', '')[:40]}': "
+                "no draft text was generated (the model was unavailable)"
+            )
+            continue
+
         proposal = Proposal(
             id=uuid.uuid4().hex[:10],
             kind=kind,
             title=activity.get("title", "(untitled)"),
             url=url,
             summary=draft.get("summary", ""),
-            draft=draft.get("comment", "") if kind in ("comment", "article") else "",
+            draft=text,
             badge=badge_name,
             reason="Closest badge to completion",
         )
@@ -556,10 +567,6 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 async def drain_telegram_inbox(
     config: Config,
     builder: BuilderCenter,
@@ -632,3 +639,7 @@ async def drain_telegram_inbox(
 
     results = await run_approved_actions(builder, telegram, store)
     return len(results)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

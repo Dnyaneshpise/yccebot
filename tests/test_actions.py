@@ -580,3 +580,99 @@ def test_like_article_reports_failure_not_false_success():
     # no page attached, so nothing can be liked
     assert result.startswith("FAILED")
     assert "OK: liked" not in result
+
+# ----------------------------------------------------------------------
+# Proposals must be actionable before they are offered
+# ----------------------------------------------------------------------
+def test_empty_draft_proposal_is_refused_at_execution(tmp_path):
+    """An approved comment with no text must never be posted."""
+    import asyncio
+
+    from agent.actions import ApprovalStore, Proposal, run_approved
+
+    store = ApprovalStore(tmp_path / "approvals.json")
+    p = Proposal(id="e1", kind="comment", title="T", url="https://x/1",
+                 draft="", approved=True)
+    store._write([p.to_dict()])
+
+    posted = []
+
+    class FakeBuilder:
+        async def post_comment(self, url, text):
+            posted.append((url, text))
+            return "OK: comment posted"
+
+    async def handler(proposal):
+        return await FakeBuilder().post_comment(proposal.url, proposal.draft)
+
+    results = asyncio.run(run_approved(None, store, {"comment": handler}))
+    assert "REFUSED" in results[0][1]
+    assert posted == []
+
+
+def test_blank_draft_is_rejected_when_building_proposals(monkeypatch, tmp_path):
+    """A comment proposal is skipped when the model produced no text."""
+    import asyncio
+
+    import agent.main as m
+    from agent.actions import ApprovalStore
+
+    store = ApprovalStore(tmp_path / "approvals.json")
+    sent = []
+
+    class FakeTelegram:
+        def send_approval_request(self, proposal):
+            sent.append(proposal)
+            return 1
+
+    class FakeBuilder:
+        page = None
+
+    class FakeAI:
+        def is_configured(self):
+            return True
+
+    async def fake_find(*a, **k):
+        return [{"activity": {"title": "Some Article", "url": "https://x/1"}, "comment": ""}]
+
+    monkeypatch.setattr(m, "find_opportunities", fake_find)
+
+    state = {"badge_details": [
+        {"name": "Discussion Debut", "status": "NOT_STARTED", "count": 0, "threshold": 1}
+    ]}
+    created = asyncio.run(
+        m.propose_actions(FakeBuilder(), FakeTelegram(), FakeAI(), state, store, limit=1)
+    )
+    assert created == []
+    assert sent == []
+
+@pytest.mark.parametrize(
+    ("kind", "draft", "url", "expected"),
+    [
+        ("comment", "", "https://x/1", "no comment text"),
+        ("comment", "   ", "https://x/1", "no comment text"),
+        ("article", "", "https://x/1", "no comment text"),
+        ("like", "", "", "no url"),
+        ("teleport", "", "https://x/1", "unsupported"),
+    ],
+)
+def test_validate_for_execution_refuses(kind, draft, url, expected):
+    from agent.actions import Proposal, validate_for_execution
+
+    p = Proposal(id="v1", kind=kind, title="T", url=url, draft=draft, approved=True)
+    reason = validate_for_execution(p)
+    assert reason is not None and expected in reason
+
+
+def test_validate_allows_a_real_like():
+    from agent.actions import Proposal, validate_for_execution
+
+    p = Proposal(id="v2", kind="like", title="T", url="https://x/1", approved=True)
+    assert validate_for_execution(p) is None
+
+
+def test_validate_requires_approval():
+    from agent.actions import Proposal, validate_for_execution
+
+    p = Proposal(id="v3", kind="like", title="T", url="https://x/1", approved=None)
+    assert "no human approval" in (validate_for_execution(p) or "")

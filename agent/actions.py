@@ -226,11 +226,22 @@ async def run_approved(
 
     ``actions`` is a mapping of ``kind -> callable`` so this stays testable
     without a real browser.
+
+    Validation happens here, not just in :func:`execute`, because callers pass
+    their own handlers and could otherwise post an empty comment.
     """
     results: list[tuple[str, str]] = []
     for proposal in store.approved():
         if proposal.approved is not True:  # belt and braces
             continue
+
+        blocker = validate_for_execution(proposal)
+        if blocker is not None:
+            result = blocker
+            store.set_result(proposal.id, result)
+            results.append((proposal.id, result))
+            continue
+
         handler = actions.get(proposal.kind)
         if handler is None:
             result = f"REFUSED: no handler for '{proposal.kind}'"
@@ -245,6 +256,23 @@ async def run_approved(
         store.set_result(proposal.id, result)
         results.append((proposal.id, result))
     return results
+
+
+def validate_for_execution(proposal: Proposal) -> str | None:
+    """Return a refusal reason, or ``None`` when the proposal may be executed.
+
+    Centralised so every execution path applies the same rules.
+    """
+    if proposal.approved is not True:
+        return "REFUSED: no human approval recorded"
+    if proposal.kind in ("comment", "article") and not (proposal.draft or "").strip():
+        # Posting this would publish an empty message to a public page.
+        return "REFUSED: no comment text to post"
+    if not proposal.url:
+        return "REFUSED: proposal has no url"
+    if proposal.kind not in ("like", "comment", "vote"):
+        return f"REFUSED: unsupported action '{proposal.kind}'"
+    return None
 
 _APPROVE_RE = re.compile(r"^\s*/?(?:approve|yes|do)\s+([A-Za-z0-9_-]+)\s*$", re.I)
 _REJECT_RE = re.compile(r"^\s*/?(?:reject|no|skip)\s+([A-Za-z0-9_-]+)\s*$", re.I)
