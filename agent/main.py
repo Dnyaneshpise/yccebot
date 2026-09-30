@@ -398,20 +398,33 @@ async def run_approved_actions(
     builder: BuilderCenter,
     telegram: TelegramNotifier,
     store: ApprovalStore,
+    writes_enabled: bool = True,
 ) -> list[tuple[str, str]]:
-    """Execute only what the user has explicitly approved."""
+    """Carry out only what the user has explicitly approved.
+
+    The executor decides how the action is performed. On a machine with a
+    genuine signed-in browser it acts; on a cloud runner it records the
+    approval as deferred so a later run can pick it up.
+    """
     from agent.actions import run_approved
+    from agent.executors import build_executor
 
     pending = store.approved()
     if not pending:
         log("No approved actions waiting")
         return []
 
-    log(f"Executing {len(pending)} approved action(s)")
+    executor = build_executor(builder, writes_enabled)
+    if executor.name == "deferred":
+        log(f"{len(pending)} approved action(s) recorded; no trusted browser here, "
+            "so they stay queued for a run that has one")
+    else:
+        log(f"Executing {len(pending)} approved action(s) via the {executor.name} executor")
+
     handlers = {
-        "like": lambda p: builder.like_article(p.url),
-        "comment": lambda p: builder.post_comment(p.url, p.draft),
-        "vote": lambda p: builder.vote_on_wish(p.url),
+        "like": lambda p: executor.like(p.url),
+        "comment": lambda p: executor.comment(p.url, p.draft),
+        "vote": lambda p: executor.vote(p.url),
     }
     results = await run_approved(builder, store, handlers)
     for proposal_id, outcome in results:
@@ -464,7 +477,9 @@ async def approval_mode(config: Config, action: str) -> int:
             print("To perform approved actions:  python -m agent.main --execute")
             return 0
 
-        results = await run_approved_actions(builder, telegram, store)
+        results = await run_approved_actions(
+        builder, telegram, store, writes_enabled=config.writes_enabled
+    )
         log(f"Executed {len(results)} approved action(s)")
         return 0
     except AuthExpiredError as exc:
@@ -654,7 +669,12 @@ async def drain_telegram_inbox(
     if not execute_immediately:
         return 0
 
-    results = await run_approved_actions(builder, telegram, store)
+    writes_enabled = True
+    if config is not None:
+        writes_enabled = getattr(config, "writes_enabled", True)
+    results = await run_approved_actions(
+        builder, telegram, store, writes_enabled=writes_enabled
+    )
     return len(results)
 
 

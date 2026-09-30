@@ -715,3 +715,85 @@ async def test_duplicate_replies_produce_one_ack(tmp_path):
     await m.drain_telegram_inbox(None, FakeBuilder(), FakeTelegram(), store)
     assert len(acks) == 1, f"expected one ack, got {len(acks)}"
     assert called == ["https://x/1"]
+
+# ----------------------------------------------------------------------
+# Write executors - the swappable write step
+# ----------------------------------------------------------------------
+def test_browser_executor_delegates():
+    import asyncio
+    from agent.executors import BrowserExecutor
+
+    class FakeBuilder:
+        async def like_article(self, url):
+            return f"liked {url}"
+
+        async def post_comment(self, url, text):
+            return f"commented {len(text)}"
+
+        async def vote_on_wish(self, url):
+            return f"voted {url}"
+
+    ex = BrowserExecutor(FakeBuilder())
+    assert asyncio.run(ex.like("u")) == "liked u"
+    assert asyncio.run(ex.comment("u", "hello")) == "commented 5"
+    assert asyncio.run(ex.vote("u")) == "voted u"
+    assert ex.name == "browser"
+
+
+def test_deferred_executor_performs_nothing():
+    """A cloud run must record intent without acting on the community."""
+    import asyncio
+    from agent.executors import DEFERRED, DeferredExecutor
+
+    ex = DeferredExecutor("cloud runner")
+    assert asyncio.run(ex.like("u")).startswith(DEFERRED)
+    assert asyncio.run(ex.comment("u", "text")).startswith(DEFERRED)
+    assert len(ex.deferred) == 2
+    assert ex.deferred[0]["kind"] == "like"
+
+
+def test_build_executor_chooses_by_capability():
+    from agent.executors import BrowserExecutor, DeferredExecutor, build_executor
+
+    sentinel = object()
+    assert isinstance(build_executor(sentinel, True), BrowserExecutor)
+    assert isinstance(build_executor(sentinel, False), DeferredExecutor)
+    # No browser at all must not fall back to acting.
+    assert isinstance(build_executor(None, True), DeferredExecutor)
+
+
+def test_executors_satisfy_protocol():
+    from agent.executors import BrowserExecutor, DeferredExecutor, WriteExecutor
+
+    assert isinstance(DeferredExecutor(), WriteExecutor)
+    assert isinstance(BrowserExecutor(object()), WriteExecutor)
+
+
+async def test_cloud_run_defers_approved_writes(tmp_path):
+    """With writes disabled, an approved action is queued, not performed."""
+    import agent.main as m
+    from agent.actions import ApprovalStore, Proposal
+
+    store = ApprovalStore(tmp_path / "approvals.json")
+    store.add(Proposal(id="q1", kind="like", title="T", url="https://x/1", approved=True))
+
+    performed = []
+
+    class FakeBuilder:
+        async def like_article(self, url):
+            performed.append(url)
+            return "OK: liked"
+
+    results = await m.run_approved_actions(
+        FakeBuilder(), _SilentTelegram(), store, writes_enabled=False
+    )
+    assert performed == [], "must not act when writes are disabled"
+    assert results[0][1].startswith("DEFERRED")
+
+
+class _SilentTelegram:
+    def send_execution_report(self, *a, **k):
+        return True
+
+    def send_message(self, *a, **k):
+        return True

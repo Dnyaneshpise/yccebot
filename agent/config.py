@@ -55,6 +55,9 @@ class Config:
 
     # --- Behaviour tuning ---
     cdp_endpoint: str = ""
+    # Perform approved likes/comments/votes. Off where no genuine signed-in
+    # browser exists (cloud runners); approvals are still recorded.
+    writes_enabled: bool = True
     max_drafts: int = 3
     min_relevance: int = 4
     target_badges: int = 21
@@ -79,6 +82,7 @@ class Config:
             ),
             user_agent=os.getenv("BROWSER_USER_AGENT", ""),
             cdp_endpoint=os.getenv("BROWSER_CDP_ENDPOINT", ""),
+            writes_enabled=_env_bool("WRITES_ENABLED", True),
             max_drafts=_env_int("MAX_DRAFTS", 3),
             min_relevance=_env_int("MIN_RELEVANCE", 4),
             target_badges=_env_int("TARGET_BADGES", 21),

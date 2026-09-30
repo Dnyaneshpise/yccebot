@@ -73,6 +73,9 @@ jobs:
           HEADLESS: "true"
           MIN_RELEVANCE: "1"
           MAX_DRAFTS: "3"
+          # No genuine signed-in browser exists on a runner, so approved
+          # actions are recorded as deferred rather than attempted.
+          WRITES_ENABLED: "false"
         run: |
           case "${{ steps.mode.outputs.mode }}" in
             execute)  python -m agent.main --execute ;;
