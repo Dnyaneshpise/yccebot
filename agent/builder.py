@@ -60,6 +60,24 @@ class BuilderCenter:
         self._on_feed: bool = False
 
     async def initialize(self, storage_state_path: str | None = None) -> None:
+        """Open Builder Center, preferring a real attached browser.
+
+        A Playwright-launched browser is treated as automation by AWS: reads
+        work but writes are refused and the page renders a signed-out shell.
+        When a CDP endpoint is configured we attach to the user's own running
+        browser instead, which acts as a genuine signed-in session.
+
+        Falls back to launching with the stored state when no endpoint is set.
+        """
+        if self.cdp_endpoint:
+            if await self.connect_over_cdp(self.cdp_endpoint):
+                # The attached browser already carries the user's own session,
+                # so the stored state file is not needed on this path.
+                return
+            print("Falling back to a Playwright-launched browser")
+        await self._launch_with_state(storage_state_path)
+
+    async def _launch_with_state(self, storage_state_path: str | None = None) -> None:
         """Launch Chromium, restoring cookies from a Playwright storage state.
 
         The state file is only loaded when it exists on disk; a missing file is
@@ -598,7 +616,10 @@ class BuilderCenter:
         self.context.set_default_timeout(DEFAULT_TIMEOUT_MS)
 
         pages = [p for p in self.context.pages if "builder.aws.com" in (p.url or "")]
-        self.page = pages[0] if pages else await self.context.new_page()
+        if pages:
+            self.page = pages[0]
+        else:
+            self.page = await self.context.new_page()
         print(f"Attached to a running browser via CDP ({target})")
         return True
 

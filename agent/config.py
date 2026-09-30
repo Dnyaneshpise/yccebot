@@ -54,6 +54,7 @@ class Config:
     user_agent: str = ""
 
     # --- Behaviour tuning ---
+    cdp_endpoint: str = ""
     max_drafts: int = 3
     min_relevance: int = 4
     target_badges: int = 21
@@ -77,6 +78,7 @@ class Config:
                 "STORAGE_STATE_PATH", "auth/storage_state.json"
             ),
             user_agent=os.getenv("BROWSER_USER_AGENT", ""),
+            cdp_endpoint=os.getenv("BROWSER_CDP_ENDPOINT", ""),
             max_drafts=_env_int("MAX_DRAFTS", 3),
             min_relevance=_env_int("MIN_RELEVANCE", 4),
             target_badges=_env_int("TARGET_BADGES", 21),
@@ -91,7 +93,9 @@ class Config:
         the AWS session is truly required for badge tracking.
         """
         missing: list[str] = []
-        if not self.storage_state_b64:
+        # When attaching to a real browser the session comes from that browser,
+        # so the stored state is not required at all.
+        if not self.cdp_endpoint and not self.storage_state_b64:
             missing.append("AWS_STORAGE_STATE_B64")
         return missing
 

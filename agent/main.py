@@ -231,10 +231,13 @@ async def run(config: Config, draft: bool | None = None) -> int:
         log(f"ERROR: {exc}")
         return 2
 
-    if not config.resolved_storage_state_path.exists():
+    # The state file is only needed when we launch our own browser; when we
+    # attach to the user's running browser the session already exists there.
+    if not config.cdp_endpoint and not config.resolved_storage_state_path.exists():
         log(
             f"ERROR: no AWS session found at {config.resolved_storage_state_path}. "
-            "Generate one locally with scripts/save_login_state.py."
+            "Generate one locally with scripts/save_login_state.py, or set "
+            "BROWSER_CDP_ENDPOINT to attach to a signed-in browser."
         )
         return 2
 
@@ -247,6 +250,7 @@ async def run(config: Config, draft: bool | None = None) -> int:
         base_url=config.builder_url,
         headless=config.headless,
         user_agent=config.user_agent or None,
+        cdp_endpoint=config.cdp_endpoint or None,
     )
 
     exit_code = 0
@@ -440,6 +444,7 @@ async def approval_mode(config: Config, action: str) -> int:
         base_url=config.builder_url,
         headless=config.headless,
         user_agent=config.user_agent or None,
+        cdp_endpoint=config.cdp_endpoint or None,
     )
     try:
         await builder.initialize(str(config.resolved_storage_state_path))
@@ -495,6 +500,7 @@ async def inbox_mode(config: Config) -> int:
         base_url=config.builder_url,
         headless=config.headless,
         user_agent=config.user_agent or None,
+        cdp_endpoint=config.cdp_endpoint or None,
     )
     try:
         await builder.initialize(str(config.resolved_storage_state_path))

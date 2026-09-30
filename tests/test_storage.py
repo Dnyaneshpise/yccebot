@@ -184,16 +184,26 @@ def test_normalize_title():
 # ----------------------------------------------------------------------
 def test_config_validate_requires_session(monkeypatch):
     monkeypatch.delenv("AWS_STORAGE_STATE_B64", raising=False)
+    monkeypatch.delenv("BROWSER_CDP_ENDPOINT", raising=False)
     assert "AWS_STORAGE_STATE_B64" in Config.from_env().validate()
 
 
+def test_config_session_optional_with_cdp(monkeypatch):
+    """Attaching to a real browser supplies the session, so no state file."""
+    monkeypatch.delenv("AWS_STORAGE_STATE_B64", raising=False)
+    monkeypatch.setenv("BROWSER_CDP_ENDPOINT", "127.0.0.1:9222")
+    assert Config.from_env().validate() == []
+
+
 def test_config_validate_passes_with_session(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_ENDPOINT", raising=False)
     monkeypatch.setenv("AWS_STORAGE_STATE_B64", "e30=")
     assert Config.from_env().validate() == []
 
 
 def test_config_warnings_are_non_fatal(monkeypatch):
     monkeypatch.delenv("AWS_STORAGE_STATE_B64", raising=False)
+    monkeypatch.delenv("BROWSER_CDP_ENDPOINT", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
