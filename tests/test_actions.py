@@ -483,6 +483,11 @@ async def test_drain_inbox_records_and_executes(monkeypatch, tmp_path):
         def send_message(self, *a, **k):
             return True
 
+        def send_decision_ack(self, *a, **k):
+            self.acks = getattr(self, "acks", [])
+            self.acks.append(a[0])
+            return True
+
         def send_execution_report(self, *a, **k):
             return True
 
@@ -521,6 +526,9 @@ async def test_drain_inbox_ignores_unknown_id(tmp_path):
         def send_message(self, *a, **k):
             return True
 
+        def send_decision_ack(self, *a, **k):
+            return True
+
     called = []
 
     class FakeBuilder:
@@ -548,6 +556,9 @@ async def test_drain_inbox_rejects_perform_nothing(tmp_path):
 
         def parse_incoming_decisions(self, updates):
             return [("reject", "abc123", 4)]
+
+        def send_decision_ack(self, *a, **k):
+            return True
 
     called = []
 

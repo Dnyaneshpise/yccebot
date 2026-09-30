@@ -592,19 +592,40 @@ async def drain_telegram_inbox(
         proposal = store.get(proposal_id)
         if proposal is None:
             log(f"  {decision} {proposal_id}: no such proposal (ignored)")
-            telegram.send_message(
-                f"Ignored '{decision} {proposal_id}' - I have no proposal with "
-                "that id. Run a new proposal and use the id it shows you."
+            telegram.send_decision_ack(
+                decision,
+                proposal_id,
+                accepted=False,
+                detail="I have no proposal with that id. Run a new proposal and "
+                "reply with the id it shows you.",
             )
             continue
 
         if proposal.result is not None:
             log(f"  {decision} {proposal_id}: already actioned, skipping")
+            telegram.send_decision_ack(
+                decision,
+                proposal_id,
+                accepted=False,
+                title=proposal.title,
+                detail=f"Already handled earlier: {proposal.result}",
+            )
             continue
 
         store.decide(proposal_id, decision == "approve")
         verb = "APPROVED" if decision == "approve" else "REJECTED"
         log(f"  {verb}: {proposal.title}")
+
+        if decision == "approve":
+            telegram.send_decision_ack(
+                decision, proposal_id, accepted=True, title=proposal.title,
+                detail="Running it now. You will get a second message with the result.",
+            )
+        else:
+            telegram.send_decision_ack(
+                decision, proposal_id, accepted=True, title=proposal.title,
+                detail="Skipped. I will not suggest this one again.",
+            )
 
     if not execute_immediately:
         return 0

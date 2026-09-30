@@ -236,6 +236,31 @@ class TelegramNotifier:
             return None
         return result.get("result", {}).get("message_id")
 
+    def send_decision_ack(self, decision: str, proposal_id: str,
+                          accepted: bool, title: str = "", detail: str = "") -> bool:
+        """Acknowledge a reply so the user always gets an answer.
+
+        Every reply the user sends gets exactly one response, including ones
+        we cannot act on - silence would leave them unsure whether the agent
+        saw the message at all.
+        """
+        if decision == "approve":
+            head = "\U0001f4dd Reply received"
+            if accepted:
+                head = "\u2705 Approved"
+            else:
+                head = "\u26a0\ufe0f Could not approve"
+        else:
+            head = "\U0001f916 Skipped" if accepted else "\u26a0\ufe0f Could not skip"
+
+        lines = [head, "", f"id: {proposal_id}"]
+        if title:
+            lines.append(f"item: {title}")
+        if detail:
+            lines.append("")
+            lines.append(detail)
+        return self.send_message("\n".join(lines))
+
     def send_execution_report(self, results: list[tuple[str, str]]) -> bool:
         """Report what the agent did after executing approvals."""
         if not results:

@@ -831,27 +831,75 @@ class BuilderCenter:
     # They perform exactly the action that was approved and make no judgement
     # calls of their own.
     # ------------------------------------------------------------------
-    async def _dismiss_consent(self) -> None:
-        """Remove the cookie/consent banner so controls are clickable.
+    async def _dismiss_consent(self) -> bool:
+        """Remove the cookie-consent banner that covers the page.
 
-        The banner contains a "Sign in" button even when authenticated, which
-        both blocks clicks and confuses the auth check.
+        This matters more than it looks: the banner is a full-screen overlay,
+        so it intercepts clicks on the like button. Clicks appear to succeed
+        while nothing happens at all. Returns True if a banner was present.
         """
         if self.page is None:
-            return
-        for selector in (
+            return False
+
+        # Prefer the banner's own "Accept"/"Decline" buttons - that records the
+        # choice in the cookie so it stops coming back.
+        for label in ("Accept", "Decline", "Accept all", "Continue"):
+            try:
+                button = self.page.locator(f"button:has-text('{label}')").first
+                if await button.count() > 0 and await button.is_visible():
+                    await button.click(timeout=6000)
+                    await self.page.wait_for_timeout(700)
+                    break
+            except Exception:
+                continue
+
+        removed = False
+        selectors = (
             "[data-testid='ccba-content']",
             "[data-testid='ccba-footer']",
             "[class*='cbbas']",
             "[id*='ccba']",
-        ):
+            "[class*='cookie-consent']",
+            "[class*='cookieConsent']",
+            "[role='dialog'][class*='modal']",
+            "[class*='awsui-modal-root']",
+        )
+        for selector in selectors:
             try:
+                count = await self.page.locator(selector).count()
+                if count == 0:
+                    continue
                 await self.page.evaluate(
                     "sel => document.querySelectorAll(sel).forEach(e => e.remove())",
                     selector,
                 )
+                removed = True
             except Exception:
                 continue
+
+        # Any leftover full-screen overlay that would swallow clicks.
+        try:
+            blocked = await self.page.evaluate(
+                """() => {
+                    const overlays = [...document.querySelectorAll('body *')]
+                      .filter(e => {
+                        const s = getComputedStyle(e);
+                        if (s.position !== 'fixed') return false;
+                        const z = parseInt(s.zIndex || '0', 10);
+                        return z >= 1000 && e.offsetWidth > window.innerWidth * 0.8;
+                      });
+                    overlays.forEach(e => e.remove());
+                    return overlays.length;
+                }"""
+            )
+            if blocked:
+                removed = True
+        except Exception:
+            pass
+
+        if removed:
+            await self.page.wait_for_timeout(400)
+        return removed
 
     async def _find_action_control(self, aria_prefix: str) -> Any:
         """Locate a control by its aria-label prefix, or return None."""
