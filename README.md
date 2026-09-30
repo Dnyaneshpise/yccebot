@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # AWS Builder Badge Agent
 
 A free, self-hosted agent that tracks your **AWS Builder Center badge progress**
@@ -231,3 +232,6 @@ python -m pytest tests/ -q            # run the test suite
   [official AWS Student Rewards page](https://aws.amazon.com/education/aws-student-rewards/).
 - This tool automates *your own* account only. Do not use it to game the
   program or to post on behalf of others.
+=======
+# yccebot
+>>>>>>> origin/main
